@@ -619,10 +619,18 @@ func connect(secretFile string, connectorName string, namespace string, clientse
                 panic(err)
         }
 	secret.ObjectMeta.Name = connectorName
-	_, err = clientset.CoreV1().Secrets(namespace).Create(&secret)
+	//determine if local deployment is edge or interior
+	current, err := clientset.AppsV1().Deployments(namespace).Get("skupper-router", metav1.GetOptions{})
 	if err == nil {
-		//determine if local deployment is edge or interior
-		current, err := clientset.AppsV1().Deployments(namespace).Get("skupper-router", metav1.GetOptions{})
+		secret.ObjectMeta.SetOwnerReferences([]metav1.OwnerReference{
+			metav1.OwnerReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       current.ObjectMeta.Name,
+				UID:        current.ObjectMeta.UID,
+			},
+		});
+		_, err = clientset.CoreV1().Secrets(namespace).Create(&secret)
 		if err == nil {
 			//read annotations to get the host and port to connect to
 			connector := Connector{
@@ -642,13 +650,13 @@ func connect(secretFile string, connectorName string, namespace string, clientse
 			if err != nil {
 				fmt.Println("Failed to update router deployment: ", err.Error())
 			}
+		} else if errors.IsAlreadyExists(err) {
+			fmt.Println("A connector secret of that name already exist, please choose a different name")
 		} else {
-			fmt.Println("Failed to retrieve router deployment: ", err.Error())
+			fmt.Println("Failed to create connector secret: ", err.Error())
 		}
-	} else if errors.IsAlreadyExists(err) {
-		fmt.Println("A connector secret of that name already exist, please choose a different name")
 	} else {
-		fmt.Println("Failed to create connector secret: ", err.Error())
+		fmt.Println("Failed to retrieve router deployment: ", err.Error())
 	}
 }
 

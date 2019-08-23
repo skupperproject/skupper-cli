@@ -20,9 +20,6 @@ Creates a skupper installation. Options are:
 
 Deletes a skupper installation.
 
-TODO: currently does not delete secrets used with `connect` command,
-so these need to be manually deleted at present.
-
 ### skupper secret
 
 Generates a kubernetes secret (as yaml) which can be used in another
