@@ -29,6 +29,8 @@ import (
 	"github.com/skupperproject/skupper-cli/pkg/certs"
 )
 
+var version = "undefined"
+
 type RouterMode string
 
 const (
@@ -59,10 +61,22 @@ func connectJson() string {
 `
 	return connect_json
 }
+
+type ConsoleAuthMode string
+
+const (
+	ConsoleAuthModeOpenshift ConsoleAuthMode = "openshift"
+	ConsoleAuthModeInternal                  = "internal"
+	ConsoleAuthModeUnsecured                 = "unsecured"
+)
+
 type Router struct {
 	Name string
 	Mode RouterMode
 	Replicas int32
+	Console ConsoleAuthMode
+	ConsoleUser string
+	ConsolePassword string
 }
 
 func routerConfig(router *Router) string {
@@ -94,12 +108,40 @@ listener {
     authenticatePeer: true
 }
 
-# TODO: secure console
+{{- if eq .Console "openshift"}}
+# console secured by oauth proxy sidecar
+listener {
+    host: localhost
+    port: 8888
+    role: normal
+    http: true
+}
+{{- else if eq .Console "internal"}}
 listener {
     host: 0.0.0.0
     port: 8080
     role: normal
     http: true
+    authenticatePeer: true
+}
+{{- else if eq .Console "unsecured"}}
+listener {
+    host: 0.0.0.0
+    port: 8080
+    role: normal
+    http: true
+}
+{{- end }}
+
+listener {
+    host: 0.0.0.0
+    port: 9090
+    role: normal
+    http: true
+    httpRootDir: disabled
+    websockets: false
+    healthz: true
+    metrics: true
 }
 
 {{- if eq .Mode "interior" }}
@@ -174,6 +216,36 @@ connector {
 	return buff.String()
 }
 
+func mountConfigVolume(name string, path string, containerIndex int, router *appsv1.Deployment) {
+	//define volume in deployment
+	volumes := router.Spec.Template.Spec.Volumes
+	if volumes == nil {
+		volumes = []corev1.Volume{}
+	}
+	volumes = append(volumes, corev1.Volume{
+		Name: name,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: name,
+				},
+			},
+		},
+	})
+	router.Spec.Template.Spec.Volumes = volumes
+
+	//define mount in container
+	volumeMounts := router.Spec.Template.Spec.Containers[containerIndex].VolumeMounts
+	if volumeMounts == nil {
+		volumeMounts = []corev1.VolumeMount{}
+	}
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      name,
+		MountPath: path,
+	})
+	router.Spec.Template.Spec.Containers[containerIndex].VolumeMounts = volumeMounts
+}
+
 func mountSecretVolume(name string, path string, containerIndex int, router *appsv1.Deployment) {
 	//define volume in deployment
 	volumes := router.Spec.Template.Spec.Volumes
@@ -204,6 +276,76 @@ func mountSecretVolume(name string, path string, containerIndex int, router *app
 
 func mountRouterTLSVolume(name string, router *appsv1.Deployment) {
 	mountSecretVolume(name, "/etc/qpid-dispatch-certs/" + name + "/", 0, router)
+}
+
+func ensureSaslUsers(user string, password string, owner *metav1.OwnerReference, kube *KubeDetails) {
+	name := "skupper-console-users"
+	_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get(name, metav1.GetOptions{})
+	if err == nil  {
+		fmt.Println("console users secret already exists")
+	} else if errors.IsNotFound(err) {
+		secret := corev1.Secret{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "v1",
+				Kind:       "Secret",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+			},
+			Data: map[string][]byte{
+				user: []byte(password),
+			},
+		}
+		if owner != nil {
+			secret.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+				*owner,
+			}
+		}
+
+		_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&secret)
+		if err != nil {
+			log.Fatal("Failed to create console users secret: ", err.Error())
+		}
+	} else {
+		log.Fatal("Failed to check for console users secret: ", err.Error())
+	}
+}
+
+func ensureSaslConfig(owner *metav1.OwnerReference, kube *KubeDetails) {
+	name := "skupper-sasl-config"
+	_, err :=kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(name, metav1.GetOptions{})
+	if err == nil  {
+		fmt.Println("sasl config already exists")
+	} else if errors.IsNotFound(err) {
+		config := `
+pwcheck_method: auxprop
+auxprop_plugin: sasldb
+sasldb_path: /tmp/qdrouterd.sasldb
+`
+		configMap := &corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "apps/v1",
+				Kind:       "ConfigMap",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       name,
+			},
+			Data: map[string]string{
+				"qdrouterd.conf": config,
+			},
+		}
+		if owner != nil {
+			configMap.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+				*owner,
+			}
+		}
+		_, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(configMap)
+		if err != nil {
+			log.Fatal("Failed to create sasl config: ", err.Error())
+		}
+	} else {
+		log.Fatal("Failed to check for sasl config: ", err.Error())
+	}
 }
 
 func addConnector(connector *Connector, router *appsv1.Deployment) {
@@ -250,9 +392,20 @@ func routerPorts(router *Router) []corev1.ContainerPort {
 		Name:          "amqps",
 		ContainerPort: 5671,
 	})
+	if router.Console == ConsoleAuthModeOpenshift {
+		ports = append(ports, corev1.ContainerPort{
+			Name:          "console",
+			ContainerPort: 8888,
+		})
+	} else if router.Console != "" {
+		ports = append(ports, corev1.ContainerPort{
+			Name:          "console",
+			ContainerPort: 8080,
+		})
+	}
 	ports = append(ports, corev1.ContainerPort{
 		Name:          "http",
-		ContainerPort: 8080,
+		ContainerPort: 9090,
 	})
 	if router.Mode == RouterModeInterior {
 		ports = append(ports, corev1.ContainerPort{
@@ -319,6 +472,11 @@ func routerEnv(router *Router) []corev1.EnvVar {
 		envVars = append(envVars, corev1.EnvVar{Name: "QDROUTERD_AUTO_MESH_DISCOVERY", Value: "QUERY"})
 	}
 	envVars = append(envVars, corev1.EnvVar{Name: "QDROUTERD_CONF", Value: routerConfig(router)})
+	if router.Console == ConsoleAuthModeInternal {
+		envVars = append(envVars, corev1.EnvVar{Name: "QDROUTERD_AUTO_CREATE_SASLDB_SOURCE", Value: "/etc/qpid-dispatch/sasl-users/"})
+		envVars = append(envVars, corev1.EnvVar{Name: "QDROUTERD_AUTO_CREATE_SASLDB_PATH", Value: "/tmp/qdrouterd.sasldb"})
+	}
+
 	return envVars
 }
 
@@ -336,7 +494,7 @@ func routerContainer(router *Router) corev1.Container {
 			InitialDelaySeconds: 60,
 			Handler: corev1.Handler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Port: intstr.FromInt(8080),
+					Port: intstr.FromInt(9090),
 					Path: "/healthz",
 				},
 			},
@@ -375,7 +533,7 @@ func RouterDeployment(router *Router, namespace string) *appsv1.Deployment {
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 					Annotations: map[string]string{
-						"prometheus.io/port":   "8080",
+						"prometheus.io/port":   "9090",
 						"prometheus.io/scrape": "true",
 					},
 				},
@@ -386,6 +544,40 @@ func RouterDeployment(router *Router, namespace string) *appsv1.Deployment {
 			},
 		},
 	}
+
+	if router.Console == ConsoleAuthModeOpenshift {
+		containers := dep.Spec.Template.Spec.Containers
+		containers = append(containers, corev1.Container{
+			Image: "openshift/oauth-proxy:latest",
+			Name:  "oauth-proxy",
+			Args: []string{
+				"--https-address=:8443",
+				"--provider=openshift",
+				"--openshift-service-account=skupper",
+				"--upstream=http://localhost:8888",
+				"--tls-cert=/etc/tls/proxy-certs/tls.crt",
+				"--tls-key=/etc/tls/proxy-certs/tls.key",
+				"--cookie-secret=SECRET",
+			},
+			Ports: []corev1.ContainerPort{
+				corev1.ContainerPort{
+					Name:          "http",
+					ContainerPort: 8080,
+				},
+				corev1.ContainerPort{
+					Name:          "https",
+					ContainerPort: 8443,
+				},
+			},
+
+		})
+		dep.Spec.Template.Spec.Containers = containers
+		mountSecretVolume("skupper-proxy-certs", "/etc/tls/proxy-certs/", 1, dep)
+	} else if router.Console == ConsoleAuthModeInternal {
+		mountSecretVolume("skupper-console-users", "/etc/qpid-dispatch/sasl-users/", 0, dep)
+		mountConfigVolume("skupper-sasl-config", "/etc/sasl2/", 0, dep)
+	}
+
 	return dep
 }
 
@@ -509,7 +701,7 @@ func ensureCA(name string, kube *KubeDetails) *corev1.Secret {
 	return nil
 }
 
-func ensureService(name string, ports []corev1.ServicePort, kube *KubeDetails) {
+func ensureService(name string, ports []corev1.ServicePort, owner *metav1.OwnerReference, servingCert string, kube *KubeDetails) {
 	_, err :=kube.Standard.CoreV1().Services(kube.Namespace).Get(name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("Service", name, "already exists")
@@ -528,6 +720,17 @@ func ensureService(name string, ports []corev1.ServicePort, kube *KubeDetails) {
 				Ports:    ports,
 			},
 		}
+		if servingCert != "" {
+			service.ObjectMeta.Annotations = map[string]string{
+				"service.alpha.openshift.io/serving-cert-secret-name": servingCert,
+			}
+		}
+		if owner != nil {
+			service.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+				*owner,
+			}
+
+		}
 		_, err := kube.Standard.CoreV1().Services(kube.Namespace).Create(service)
 		if err != nil {
 			fmt.Println("Failed to create service", name, ": ", err.Error())
@@ -537,7 +740,11 @@ func ensureService(name string, ports []corev1.ServicePort, kube *KubeDetails) {
 	}
 }
 
-func ensureRoute(name string, targetService string, targetPort string, kube *KubeDetails) string {
+func ensureRoute(name string, targetService string, targetPort string, termination routev1.TLSTerminationType, owner *metav1.OwnerReference, kube *KubeDetails) string {
+	insecurePolicy := routev1.InsecureEdgeTerminationPolicyNone
+	if termination != routev1.TLSTerminationPassthrough {
+		insecurePolicy = routev1.InsecureEdgeTerminationPolicyRedirect
+	}
 	_, err := kube.Routes.Routes(kube.Namespace).Get(name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("Route", name, "already exists")
@@ -560,20 +767,26 @@ func ensureRoute(name string, targetService string, targetPort string, kube *Kub
 					Name: targetService,
 				},
 				TLS: &routev1.TLSConfig{
-					Termination:                   routev1.TLSTerminationPassthrough,
-					InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyNone,
+					Termination:                   termination,
+					InsecureEdgeTerminationPolicy: insecurePolicy,
 				},
 			},
+		}
+		if owner != nil {
+			route.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+				*owner,
+			}
+
 		}
 
 		created, err := kube.Routes.Routes(kube.Namespace).Create(route)
 		if err != nil {
-			fmt.Println("Failed to create service", name, ": ", err.Error())
+			fmt.Println("Failed to create route", name, ": ", err.Error())
 		} else {
 			return created.Spec.Host
 		}
 	} else {
-		fmt.Println("Failed while checking service", name, ": ", err.Error())
+		fmt.Println("Failed while checking route", name, ": ", err.Error())
 	}
 	return ""
 }
@@ -594,7 +807,7 @@ func generateSecret(caSecret *corev1.Secret, name string, subject string, hosts 
 	}
 }
 
-func ensureServiceAccount(name string, router *appsv1.Deployment, kube *KubeDetails) *corev1.ServiceAccount {
+func ensureServiceAccount(name string, router *appsv1.Deployment, oauth bool, kube *KubeDetails) *corev1.ServiceAccount {
 	serviceaccount := &corev1.ServiceAccount{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
@@ -611,6 +824,11 @@ func ensureServiceAccount(name string, router *appsv1.Deployment, kube *KubeDeta
 				},
 			},
 		},
+	}
+	if oauth {
+		serviceaccount.ObjectMeta.Annotations = map[string]string{
+			"serviceaccounts.openshift.io/oauth-redirectreference.primary": "{\"kind\":\"OAuthRedirectReference\",\"apiVersion\":\"v1\",\"reference\":{\"kind\":\"Route\",\"name\":\"skupper-console\"}}",
+		}
 	}
 	actual, err := kube.Standard.CoreV1().ServiceAccounts(kube.Namespace).Create(serviceaccount)
 	if err != nil {
@@ -749,44 +967,76 @@ func initCommon(router *Router, volumes []string, kube *KubeDetails) *appsv1.Dep
 	generateSecret(ca, "skupper-amqps", "skupper-messaging", "skupper-messaging,skupper-messaging." + kube.Namespace + ".svc.cluster.local", false, kube)
 	generateSecret(ca, "skupper", "skupper-messaging", "", true, kube)
 	dep := ensureRouterDeployment(router, volumes, kube)
-	ensureServiceAccount("skupper", dep, kube)
+	ensureServiceAccount("skupper", dep, router.Console == ConsoleAuthModeOpenshift, kube)
 	ensureViewRole(dep, kube)
 	ensureRoleBinding("skupper", "skupper-view", dep, kube)
 
-	ensureService("skupper-messaging", messagingServicePorts(), kube)
+
+	owner := metav1.OwnerReference{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       dep.ObjectMeta.Name,
+		UID:        dep.ObjectMeta.UID,
+	}
+
+	ensureService("skupper-messaging", messagingServicePorts(), &owner, "", kube)
+	if router.Console != "" {
+		servingCerts := ""
+		termination := routev1.TLSTerminationEdge
+		port := corev1.ServicePort{
+			Name:       "console",
+			Protocol:   "TCP",
+			Port:       8080,
+			TargetPort: intstr.FromInt(8080),
+		}
+
+		if router.Console == ConsoleAuthModeOpenshift {
+			servingCerts = "skupper-proxy-certs"
+			termination = routev1.TLSTerminationReencrypt
+			port = corev1.ServicePort{
+				Name:       "console",
+				Protocol:   "TCP",
+				Port:       443,
+				TargetPort: intstr.FromInt(8443),
+			}
+		} else if router.Console == ConsoleAuthModeInternal {
+			ensureSaslConfig(&owner, kube)
+			ensureSaslUsers(router.ConsoleUser, router.ConsolePassword, &owner, kube)
+		}
+		ensureService("skupper-console", []corev1.ServicePort{
+			port,
+		}, &owner, servingCerts, kube)
+		ensureRoute("skupper-console", "skupper-console", "console", termination, &owner, kube)
+	}
 
 	return dep
 }
 
 func initProxyController(enableServiceSync bool, router *appsv1.Deployment, kube *KubeDetails) {
-	ensureServiceAccount("skupper-proxy-controller", router, kube)
+	ensureServiceAccount("skupper-proxy-controller", router, false, kube)
 	ensureEditRole(router, kube)
 	ensureRoleBinding("skupper-proxy-controller", "skupper-edit", router, kube)
 	ensureProxyController(enableServiceSync, kube)
 }
 
-func initEdge(name string, kube *KubeDetails) *appsv1.Deployment {
-	router := Router{
-		Name: name,
-		Mode: RouterModeEdge,
-		Replicas: 1,
-	}
-	return initCommon(&router, []string{"skupper-amqps"}, kube)
+func initEdge(router *Router, kube *KubeDetails) *appsv1.Deployment {
+	return initCommon(router, []string{"skupper-amqps"}, kube)
 }
 
-func initInterior(name string, kube *KubeDetails) *appsv1.Deployment {
+func initInterior(router *Router, kube *KubeDetails) *appsv1.Deployment {
 	internalCa := ensureCA("skupper-internal-ca", kube)
-	router := Router{
-		Name: name,
-		Mode: RouterModeInterior,
-		Replicas: 1,
+	dep := initCommon(router, []string{"skupper-amqps", "skupper-internal"}, kube)
+	owner := metav1.OwnerReference{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       dep.ObjectMeta.Name,
+		UID:        dep.ObjectMeta.UID,
 	}
-	dep := initCommon(&router, []string{"skupper-amqps", "skupper-internal"}, kube)
-	ensureService("skupper-internal", internalServicePorts(), kube)
+	ensureService("skupper-internal", internalServicePorts(), &owner, "", kube)
 	//TODO: handle loadbalancer service where routes are not available
-	hosts := ensureRoute("skupper-inter-router", "skupper-internal", "inter-router", kube)
-	hosts += "," + ensureRoute("skupper-edge", "skupper-internal", "edge", kube)
-	generateSecret(internalCa, "skupper-internal", name, hosts, false, kube)
+	hosts := ensureRoute("skupper-inter-router", "skupper-internal", "inter-router", routev1.TLSTerminationPassthrough, &owner, kube)
+	hosts += "," + ensureRoute("skupper-edge", "skupper-internal", "edge", routev1.TLSTerminationPassthrough, &owner, kube)
+	generateSecret(internalCa, "skupper-internal", router.Name, hosts, false, kube)
 	return dep
 }
 
@@ -814,30 +1064,6 @@ func deleteSecret(name string, kube *KubeDetails) {
 	}
 }
 
-func deleteService(name string, kube *KubeDetails) {
-	services:= kube.Standard.CoreV1().Services(kube.Namespace)
-	err :=  services.Delete(name, &metav1.DeleteOptions{})
-	if err == nil  {
-		fmt.Println("Service", name, "deleted")
-	} else if errors.IsNotFound(err) {
-		fmt.Println("Service", name, "does not exist")
-	} else {
-		fmt.Println("Failed to delete service", name, ": ", err.Error())
-	}
-}
-
-func deleteRoute(name string, kube *KubeDetails) {
-	routes := kube.Routes.Routes(kube.Namespace)
-	err :=  routes.Delete(name, &metav1.DeleteOptions{})
-	if err == nil  {
-		fmt.Println("Route", name, "deleted")
-	} else if errors.IsNotFound(err) {
-		fmt.Println("Route", name, "does not exist")
-	} else {
-		fmt.Println("Failed to delete route", name, ": ", err.Error())
-	}
-}
-
 func deleteSkupper(kube *KubeDetails) {
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
 	deleteDeployment("skupper-router", kube)
@@ -845,13 +1071,9 @@ func deleteSkupper(kube *KubeDetails) {
 	deleteSecret("skupper-ca", kube)
 	deleteSecret("skupper-amqps", kube)
 	deleteSecret("skupper", kube)
-	deleteService("skupper-messaging", kube)
 	if err == nil && isInterior(current) {
 		deleteSecret("skupper-internal-ca", kube)
 		deleteSecret("skupper-internal", kube)
-		deleteService("skupper-internal", kube)
-		deleteRoute("skupper-inter-router", kube)
-		deleteRoute("skupper-edge", kube)
 	}
 }
 
@@ -1027,20 +1249,60 @@ func main() {
 	var isEdge bool
 	var enableProxyController bool
 	var enableServiceSync bool
+	var enableRouterConsole bool
+	var routerConsoleAuthMode string
+	var routerConsoleUser string
+	var routerConsolePassword string
 	var cmdInit = &cobra.Command{
 		Use:   "init",
 		Short: "Initialise skupper infrastructure",
 		Long: `init will setup a router and other supporting objects to provide a functional skupper installation that can then be connected to other skupper installations`,
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
+			router := Router{
+				Name: skupperName,
+				Mode: RouterModeInterior,
+				Replicas: 1,
+			}
+			if enableRouterConsole {
+				if routerConsoleAuthMode == string(ConsoleAuthModeInternal) || routerConsoleAuthMode == "" {
+					router.Console = ConsoleAuthModeInternal
+					router.ConsoleUser = routerConsoleUser
+					router.ConsolePassword = routerConsolePassword
+					if router.ConsoleUser == "" {
+						router.ConsoleUser = "admin"
+					}
+					if router.ConsolePassword == "" {
+						router.ConsolePassword = randomId(10)
+					}
+				} else {
+					if routerConsoleUser != "" {
+						log.Fatal("--router-console-user only valid when --router-console-auth=internal")
+					}
+					if routerConsolePassword != "" {
+						log.Fatal("--router-console-password only valid when --router-console-auth=internal")
+					}
+					if routerConsoleAuthMode == string(ConsoleAuthModeOpenshift) {
+						router.Console = ConsoleAuthModeOpenshift
+					} else if routerConsoleAuthMode == string(ConsoleAuthModeUnsecured) {
+						router.Console = ConsoleAuthModeUnsecured
+					} else {
+						log.Fatal("Unrecognised router console authentication mode: ", routerConsoleAuthMode)
+					}
+				}
+			}
+
 			kube := initKubeConfig(namespace, context)
 			var dep *appsv1.Deployment
 			if !isEdge {
 				fmt.Println("Initialising skupper")
-				dep = initInterior(skupperName, kube)
+
+				dep = initInterior(&router, kube)
 			} else {
 				fmt.Println("Initialising skupper as edge")
-				dep = initEdge(skupperName, kube)
+				router.Mode = RouterModeEdge
+
+				dep = initEdge(&router, kube)
 			}
 			if enableProxyController {
 				initProxyController(enableServiceSync, dep, kube)
@@ -1051,6 +1313,10 @@ func main() {
 	cmdInit.Flags().BoolVarP(&isEdge, "edge", "", false, "Configure as an edge")
 	cmdInit.Flags().BoolVarP(&enableProxyController, "enable-proxy-controller", "", true, "Setup the proxy controller as well as the router")
 	cmdInit.Flags().BoolVarP(&enableServiceSync, "enable-service-sync", "", true, "Configure proxy controller to particiapte in service sync (not relevant if --enable-proxy-controller is false)")
+	cmdInit.Flags().BoolVarP(&enableRouterConsole, "enable-router-console", "", false, "Enable router console")
+	cmdInit.Flags().StringVarP(&routerConsoleAuthMode, "router-console-auth", "", "", "Authentication mode for router console. One of: 'openshift', 'internal', 'unsecured'")
+	cmdInit.Flags().StringVarP(&routerConsoleUser, "router-console-user", "", "", "Router console user. Valid only when --router-console-auth=internal")
+	cmdInit.Flags().StringVarP(&routerConsolePassword, "router-console-password", "", "", "Router console user. Valid only when --router-console-auth=internal")
 
 	var cmdDelete = &cobra.Command{
 		Use:   "delete",
@@ -1105,6 +1371,7 @@ func main() {
 	}
 
 	var rootCmd = &cobra.Command{Use: "skupper"}
+	rootCmd.Version = version
 	rootCmd.AddCommand(cmdInit, cmdDelete, cmdSecret, cmdConnect, cmdDisconnect, cmdStatus)
 	rootCmd.PersistentFlags().BoolVarP(&silent, "quiet", "q", false, "reduced output (NOT YET IMPLEMENTED)")
 	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "kubeconfig context to use")

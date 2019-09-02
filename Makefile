@@ -1,7 +1,9 @@
+VERSION := $(shell git describe --tags --dirty=-modified)
+
 all: build
 
 build:
-	go build -o skupper cmd/skupper.go
+	go build -ldflags="-X main.version=${VERSION}"  -o skupper cmd/skupper.go
 
 clean:
 	rm -rf skupper release
