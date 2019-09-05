@@ -9,6 +9,8 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 	"text/template"
 
 	routev1 "github.com/openshift/api/route/v1"
@@ -175,6 +177,8 @@ address {
     prefix: mc
     distribution: multicast
 }
+
+## Connectors: ##
 `
 	var buff bytes.Buffer
 	qdrconfig := template.Must(template.New("qdrconfig").Parse(config))
@@ -205,8 +209,6 @@ connector {
     port: {{.Port}}
     role: {{.Role}}
     sslProfile: {{.Name}}-profile
-    #TODO: fix this
-    #verifyHostname: false
 }
 
 `
@@ -276,6 +278,24 @@ func mountSecretVolume(name string, path string, containerIndex int, router *app
 
 func mountRouterTLSVolume(name string, router *appsv1.Deployment) {
 	mountSecretVolume(name, "/etc/qpid-dispatch-certs/" + name + "/", 0, router)
+}
+
+func unmountRouterTLSVolume(name string, router *appsv1.Deployment) {
+	volumes := []corev1.Volume{}
+	for _, v := range router.Spec.Template.Spec.Volumes {
+		if v.Name != name {
+			volumes = append(volumes, v)
+		}
+	}
+	router.Spec.Template.Spec.Volumes = volumes
+
+	volumeMounts := []corev1.VolumeMount{}
+	for _, vm := range router.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if vm.Name != name {
+			volumeMounts = append(volumeMounts, vm)
+		}
+	}
+	router.Spec.Template.Spec.Containers[0].VolumeMounts = volumeMounts
 }
 
 func ensureSaslUsers(user string, password string, owner *metav1.OwnerReference, kube *KubeDetails) {
@@ -588,7 +608,7 @@ func randomId(length int) string {
     return result[:length]
 }
 
-func ensureProxyController(enableServiceSync bool, kube *KubeDetails) {
+func ensureProxyController(enableServiceSync bool, router *appsv1.Deployment, kube *KubeDetails) {
 	deployments:= kube.Standard.AppsV1().Deployments(kube.Namespace)
 	_, err :=  deployments.Get("skupper-proxy-controller", metav1.GetOptions{})
 	if err == nil  {
@@ -612,6 +632,14 @@ func ensureProxyController(enableServiceSync bool, kube *KubeDetails) {
 					Name: "ICPROXY_SERVICE_ACCOUNT",
 					Value: "skupper",
 				},
+				{
+					Name: "OWNER_NAME",
+					Value: router.ObjectMeta.Name,
+				},
+				{
+					Name: "OWNER_UID",
+					Value: string(router.ObjectMeta.UID),
+				},
 			},
 		}
 		var replicas int32
@@ -623,6 +651,9 @@ func ensureProxyController(enableServiceSync bool, kube *KubeDetails) {
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "skupper-proxy-controller",
+				OwnerReferences: []metav1.OwnerReference{
+					get_owner_reference(router),
+				},
 			},
 			Spec: appsv1.DeploymentSpec{
 				Replicas: &replicas,
@@ -651,10 +682,10 @@ func ensureProxyController(enableServiceSync bool, kube *KubeDetails) {
 
 		_, err := deployments.Create(dep)
 		if err != nil {
-			log.Fatal("Failed to create router deployment: " + err.Error())
+			log.Fatal("Failed to create proxy-controller deployment: " + err.Error())
 		}
 	} else {
-		log.Fatal("Failed to check router deployment: " + err.Error())
+		log.Fatal("Failed to check proxy-controller deployment: " + err.Error())
 	}
 }
 
@@ -682,13 +713,19 @@ func ensureRouterDeployment(router *Router, volumes []string, kube *KubeDetails)
 	return nil
 }
 
-func ensureCA(name string, kube *KubeDetails) *corev1.Secret {
+func ensureCA(name string, owner *metav1.OwnerReference, kube *KubeDetails) *corev1.Secret {
 	existing, err :=kube.Standard.CoreV1().Secrets(kube.Namespace).Get(name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("CA", name, "already exists")
 		return existing
 	} else if errors.IsNotFound(err) {
 		ca := certs.GenerateCASecret(name, name)
+		if owner != nil {
+			ca.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+				*owner,
+			}
+
+		}
 		_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&ca)
 		if err == nil {
 			return &ca
@@ -791,10 +828,15 @@ func ensureRoute(name string, targetService string, targetPort string, terminati
 	return ""
 }
 
-func generateSecret(caSecret *corev1.Secret, name string, subject string, hosts string, includeConnectJson bool, kube *KubeDetails) {
+func generateSecret(caSecret *corev1.Secret, name string, subject string, hosts string, includeConnectJson bool, owner *metav1.OwnerReference, kube *KubeDetails) {
 	secret := certs.GenerateSecret(name, subject, hosts, caSecret)
 	if includeConnectJson {
 		secret.Data["connect.json"] = []byte(connectJson())
+	}
+	if owner != nil {
+		secret.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+			*owner,
+		}
 	}
 	_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&secret)
 	if err != nil {
@@ -816,12 +858,7 @@ func ensureServiceAccount(name string, router *appsv1.Deployment, oauth bool, ku
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			OwnerReferences: []metav1.OwnerReference{
-				metav1.OwnerReference{
-					APIVersion: "apps/v1",
-					Kind:       "Deployment",
-					Name:       router.ObjectMeta.Name,
-					UID:        router.ObjectMeta.UID,
-				},
+				get_owner_reference(router),
 			},
 		},
 	}
@@ -852,12 +889,7 @@ func ensureViewRole(router *appsv1.Deployment, kube *KubeDetails) *rbacv1.Role {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			OwnerReferences: []metav1.OwnerReference{
-				metav1.OwnerReference{
-					APIVersion: "apps/v1",
-					Kind:       "Deployment",
-					Name:       router.ObjectMeta.Name,
-					UID:        router.ObjectMeta.UID,
-				},
+				get_owner_reference(router),
 			},
 		},
 		Rules: []rbacv1.PolicyRule{{
@@ -888,12 +920,7 @@ func ensureEditRole(router *appsv1.Deployment, kube *KubeDetails) *rbacv1.Role {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			OwnerReferences: []metav1.OwnerReference{
-				metav1.OwnerReference{
-					APIVersion: "apps/v1",
-					Kind:       "Deployment",
-					Name:       router.ObjectMeta.Name,
-					UID:        router.ObjectMeta.UID,
-				},
+				get_owner_reference(router),
 			},
 		},
 		Rules: []rbacv1.PolicyRule{
@@ -931,12 +958,7 @@ func ensureRoleBinding(serviceaccount string, role string, router *appsv1.Deploy
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			OwnerReferences: []metav1.OwnerReference{
-				metav1.OwnerReference{
-					APIVersion: "apps/v1",
-					Kind:       "Deployment",
-					Name:       router.ObjectMeta.Name,
-					UID:        router.ObjectMeta.UID,
-				},
+				get_owner_reference(router),
 			},
 		},
 		Subjects: []rbacv1.Subject{{
@@ -959,25 +981,30 @@ func ensureRoleBinding(serviceaccount string, role string, router *appsv1.Deploy
 	}
 }
 
-func initCommon(router *Router, volumes []string, kube *KubeDetails) *appsv1.Deployment {
-	if router.Name == "" {
-		router.Name = kube.Namespace
-	}
-	ca := ensureCA("skupper-ca", kube)
-	generateSecret(ca, "skupper-amqps", "skupper-messaging", "skupper-messaging,skupper-messaging." + kube.Namespace + ".svc.cluster.local", false, kube)
-	generateSecret(ca, "skupper", "skupper-messaging", "", true, kube)
-	dep := ensureRouterDeployment(router, volumes, kube)
-	ensureServiceAccount("skupper", dep, router.Console == ConsoleAuthModeOpenshift, kube)
-	ensureViewRole(dep, kube)
-	ensureRoleBinding("skupper", "skupper-view", dep, kube)
-
-
-	owner := metav1.OwnerReference{
+func get_owner_reference(dep *appsv1.Deployment) metav1.OwnerReference {
+	return metav1.OwnerReference{
 		APIVersion: "apps/v1",
 		Kind:       "Deployment",
 		Name:       dep.ObjectMeta.Name,
 		UID:        dep.ObjectMeta.UID,
 	}
+
+}
+
+func initCommon(router *Router, volumes []string, kube *KubeDetails) *appsv1.Deployment {
+	if router.Name == "" {
+		router.Name = kube.Namespace
+	}
+	dep := ensureRouterDeployment(router, volumes, kube)
+	owner := get_owner_reference(dep)
+
+	ca := ensureCA("skupper-ca", &owner, kube)
+	generateSecret(ca, "skupper-amqps", "skupper-messaging", "skupper-messaging,skupper-messaging." + kube.Namespace + ".svc.cluster.local", false, &owner, kube)
+	generateSecret(ca, "skupper", "skupper-messaging", "", true, &owner, kube)
+	ensureServiceAccount("skupper", dep, router.Console == ConsoleAuthModeOpenshift, kube)
+	ensureViewRole(dep, kube)
+	ensureRoleBinding("skupper", "skupper-view", dep, kube)
+
 
 	ensureService("skupper-messaging", messagingServicePorts(), &owner, "", kube)
 	if router.Console != "" {
@@ -1016,7 +1043,7 @@ func initProxyController(enableServiceSync bool, router *appsv1.Deployment, kube
 	ensureServiceAccount("skupper-proxy-controller", router, false, kube)
 	ensureEditRole(router, kube)
 	ensureRoleBinding("skupper-proxy-controller", "skupper-edit", router, kube)
-	ensureProxyController(enableServiceSync, kube)
+	ensureProxyController(enableServiceSync, router, kube)
 }
 
 func initEdge(router *Router, kube *KubeDetails) *appsv1.Deployment {
@@ -1024,33 +1051,17 @@ func initEdge(router *Router, kube *KubeDetails) *appsv1.Deployment {
 }
 
 func initInterior(router *Router, kube *KubeDetails) *appsv1.Deployment {
-	internalCa := ensureCA("skupper-internal-ca", kube)
 	dep := initCommon(router, []string{"skupper-amqps", "skupper-internal"}, kube)
-	owner := metav1.OwnerReference{
-		APIVersion: "apps/v1",
-		Kind:       "Deployment",
-		Name:       dep.ObjectMeta.Name,
-		UID:        dep.ObjectMeta.UID,
-	}
+	owner := get_owner_reference(dep)
+	internalCa := ensureCA("skupper-internal-ca", &owner, kube)
 	ensureService("skupper-internal", internalServicePorts(), &owner, "", kube)
 	//TODO: handle loadbalancer service where routes are not available
 	hosts := ensureRoute("skupper-inter-router", "skupper-internal", "inter-router", routev1.TLSTerminationPassthrough, &owner, kube)
 	hosts += "," + ensureRoute("skupper-edge", "skupper-internal", "edge", routev1.TLSTerminationPassthrough, &owner, kube)
-	generateSecret(internalCa, "skupper-internal", router.Name, hosts, false, kube)
+	generateSecret(internalCa, "skupper-internal", router.Name, hosts, false, &owner, kube)
 	return dep
 }
 
-func deleteDeployment(name string, kube *KubeDetails) {
-	deployments:= kube.Standard.AppsV1().Deployments(kube.Namespace)
-	err :=  deployments.Delete(name, &metav1.DeleteOptions{})
-	if err == nil  {
-		fmt.Println("Deployment", name, "deleted")
-	} else if errors.IsNotFound(err) {
-		fmt.Println("Deployment", name, "doesn't exist")
-	} else {
-		fmt.Println("Failed to delete deployment ", name, ":", err.Error())
-	}
-}
 
 func deleteSecret(name string, kube *KubeDetails) {
 	secrets:= kube.Standard.CoreV1().Secrets(kube.Namespace)
@@ -1065,15 +1076,143 @@ func deleteSecret(name string, kube *KubeDetails) {
 }
 
 func deleteSkupper(kube *KubeDetails) {
+	err := kube.Standard.AppsV1().Deployments(kube.Namespace).Delete("skupper-router", &metav1.DeleteOptions{})
+	if err == nil  {
+		fmt.Println("Skupper is now removed from '" + kube.Namespace + "'.")
+	} else if errors.IsNotFound(err) {
+		fmt.Println("Skupper not installed in '" + kube.Namespace + "'.")
+	} else {
+		fmt.Println("Error while trying to delete:", err.Error())
+	}
+}
+
+func list_connectors(mode RouterMode, kube *KubeDetails) []Connector {
+	var connectors []Connector
+	secrets, err := kube.Standard.CoreV1().Secrets(kube.Namespace).List(metav1.ListOptions{LabelSelector:"skupper.io/type=connection-token",})
+	if err == nil {
+		var role ConnectorRole
+		var hostKey string
+		var portKey string
+		if mode == RouterModeEdge {
+			role = ConnectorRoleEdge
+			hostKey = "edge-host"
+			portKey = "edge-port"
+		} else {
+			role = ConnectorRoleInterRouter
+			hostKey = "inter-router-host"
+			portKey = "inter-router-port"
+		}
+		for _, s := range secrets.Items {
+			connectors = append(connectors, Connector{
+				Name: s.ObjectMeta.Name,
+				Host: s.ObjectMeta.Annotations[hostKey],
+				Port: s.ObjectMeta.Annotations[portKey],
+				Role: role,
+			})
+		}
+	} else {
+		log.Fatal("Could not retrieve connection-token secrets:", err)
+	}
+	return connectors
+}
+
+func generate_connector_name(kube *KubeDetails) string {
+	secrets, err := kube.Standard.CoreV1().Secrets(kube.Namespace).List(metav1.ListOptions{LabelSelector:"skupper.io/type=connection-token",})
+	max := 1
+	if err == nil {
+		connector_name_pattern := regexp.MustCompile("conn([0-9])+")
+		for _, s := range secrets.Items {
+			count := connector_name_pattern.FindStringSubmatch(s.ObjectMeta.Name)
+			if len(count) > 1 {
+				v, _ := strconv.Atoi(count[1])
+				if v >= max {
+					max = v + 1
+				}
+			}
+
+		}
+	} else {
+		log.Fatal("Could not retrieve connection-token secrets:", err)
+	}
+	return "conn" + strconv.Itoa(max)
+}
+
+func get_router_mode(router *appsv1.Deployment) RouterMode {
+	if isInterior(router) {
+		return RouterModeInterior
+	} else {
+		return RouterModeEdge
+	}
+}
+
+func status(kube *KubeDetails) {
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
-	deleteDeployment("skupper-router", kube)
-	deleteDeployment("skupper-proxy-controller", kube)
-	deleteSecret("skupper-ca", kube)
-	deleteSecret("skupper-amqps", kube)
-	deleteSecret("skupper", kube)
-	if err == nil && isInterior(current) {
-		deleteSecret("skupper-internal-ca", kube)
-		deleteSecret("skupper-internal", kube)
+	if err == nil {
+		mode := get_router_mode(current)
+		connectors := list_connectors(mode, kube)
+		modedesc := "."
+		if mode == RouterModeEdge {
+			modedesc = "in edge mode."
+		}
+		if len(connectors) == 0 {
+			fmt.Println("skupper enabled for", kube.Namespace + modedesc, "It is not connected to any other sites.")
+		} else {
+			fmt.Println("skupper enabled for", kube.Namespace, modedesc, "and connected to:")
+			fmt.Println()
+			for _, c := range connectors {
+				fmt.Println("    ", c.Host +":" + c.Port, " (name=" + c.Name + ")")
+			}
+		}
+	} else if errors.IsNotFound(err) {
+		fmt.Println("skupper not enabled for", kube.Namespace)
+	} else {
+		log.Fatal(err)
+	}
+}
+
+func remove_connector(name string, list []Connector) (bool, []Connector) {
+	updated := []Connector{}
+	found := false
+	for _, c := range list {
+		if c.Name != name {
+			updated = append(updated, c)
+		} else {
+			found = true
+		}
+	}
+	return found, updated
+}
+
+func disconnect(name string, kube *KubeDetails) {
+	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	if err == nil {
+		mode := get_router_mode(router)
+		found, connectors := remove_connector(name, list_connectors(mode, kube))
+		if (found) {
+			config := findEnvVar(router.Spec.Template.Spec.Containers[0].Env, "QDROUTERD_CONF")
+			if config == nil {
+				log.Fatal("Could not retrieve router config")
+			} else {
+				pattern := "## Connectors: ##"
+				updated := strings.Split(config.Value, pattern)[0] + pattern
+				for _, c := range connectors {
+					updated += connectorConfig(&c)
+				}
+				setEnvVar(router, "QDROUTERD_CONF", updated)
+				unmountRouterTLSVolume(name, router)
+				deleteSecret(name, kube)
+				_, err = kube.Standard.AppsV1().Deployments(kube.Namespace).Update(router)
+				if err != nil {
+					fmt.Println("Failed to remove connection:", err.Error())
+				}
+			}
+		} else {
+			fmt.Println("connection", name, "not found")
+		}
+	} else if errors.IsNotFound(err) {
+		fmt.Println("skupper not enabled in", kube.Namespace)
+	} else {
+		log.Fatal(err)
 	}
 }
 
@@ -1089,17 +1228,19 @@ func connect(secretFile string, connectorName string, kube *KubeDetails) {
         if err != nil {
                 panic(err)
         }
-	secret.ObjectMeta.Name = connectorName
 	//determine if local deployment is edge or interior
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
 	if err == nil {
+		mode := get_router_mode(current)
+		if connectorName == "" {
+			connectorName = generate_connector_name(kube)
+		}
+		secret.ObjectMeta.Name = connectorName
+		secret.ObjectMeta.Labels = map[string]string{
+			"skupper.io/type": "connection-token",
+		}
 		secret.ObjectMeta.SetOwnerReferences([]metav1.OwnerReference{
-			metav1.OwnerReference{
-				APIVersion: "apps/v1",
-				Kind:       "Deployment",
-				Name:       current.ObjectMeta.Name,
-				UID:        current.ObjectMeta.UID,
-			},
+			get_owner_reference(current),
 		});
 		_, err = kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&secret)
 		if err == nil {
@@ -1107,7 +1248,7 @@ func connect(secretFile string, connectorName string, kube *KubeDetails) {
 			connector := Connector{
 				Name: connectorName,
 			}
-			if isInterior(current) {
+			if mode == RouterModeInterior {
 				connector.Host = secret.ObjectMeta.Annotations["inter-router-host"]
 				connector.Port = secret.ObjectMeta.Annotations["inter-router-port"]
 				connector.Role = ConnectorRoleInterRouter
@@ -1175,7 +1316,7 @@ func generateConnectSecret(subject string, secretFile string, kube *KubeDetails)
 				fmt.Println("Error retrieving internal CA: " + err.Error())
 			}
 		} else {
-			fmt.Println("Only hub configuration can accepts connections (skupper init --hub true)")
+			fmt.Println("Edge configuration cannot accept connections")
 		}
 	} else if errors.IsNotFound(err) {
 		fmt.Println("Router deployment does not exist (need init?): " + err.Error())
@@ -1255,7 +1396,7 @@ func main() {
 	var routerConsolePassword string
 	var cmdInit = &cobra.Command{
 		Use:   "init",
-		Short: "Initialise skupper infrastructure",
+		Short: "Initialise skupper installation",
 		Long: `init will setup a router and other supporting objects to provide a functional skupper installation that can then be connected to other skupper installations`,
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -1295,18 +1436,15 @@ func main() {
 			kube := initKubeConfig(namespace, context)
 			var dep *appsv1.Deployment
 			if !isEdge {
-				fmt.Println("Initialising skupper")
-
 				dep = initInterior(&router, kube)
 			} else {
-				fmt.Println("Initialising skupper as edge")
 				router.Mode = RouterModeEdge
-
 				dep = initEdge(&router, kube)
 			}
 			if enableProxyController {
 				initProxyController(enableServiceSync, dep, kube)
 			}
+			fmt.Println("Skupper is now installed in '" + kube.Namespace + "'.  Use 'skupper status' to get more information.")
 		},
 	}
 	cmdInit.Flags().StringVarP(&skupperName, "id", "", "", "Provide a specific identity for the skupper installation")
@@ -1320,7 +1458,7 @@ func main() {
 
 	var cmdDelete = &cobra.Command{
 		Use:   "delete",
-		Short: "Delete skupper infrastructure",
+		Short: "Delete skupper installation",
 		Long: `delete will delete any skupper related objects from the namespace`,
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -1330,49 +1468,48 @@ func main() {
 
 
 	var clientIdentity string
-	var cmdSecret = &cobra.Command{
-		Use:   "secret [path]",
-		Short: "Create a secret containing credentials and details needed for another skupper installation to connect to this one",
-		Args: requiredArg("path"),
+	var cmdConnectionToken = &cobra.Command{
+		Use:   "connection-token <output-file>",
+		Short: "Create a connection token file with which another skupper installation can connect to this one",
+		Args: requiredArg("output-file"),
 		Run: func(cmd *cobra.Command, args []string) {
 			generateConnectSecret(clientIdentity, args[0], initKubeConfig(namespace, context))
 		},
 	}
-	cmdSecret.Flags().StringVarP(&clientIdentity, "client-identity", "i", "skupper", "Provide a specific identity as which connecting skupper installation will be authenticated")
+	cmdConnectionToken.Flags().StringVarP(&clientIdentity, "client-identity", "i", "skupper", "Provide a specific identity as which connecting skupper installation will be authenticated")
 
 	var connectionName string
 	var cmdConnect = &cobra.Command{
-		Use:   "connect [secret]",
-		Short: "Connect this skupper installation to that which issued the specified secret",
-		Args: requiredArg("secret"),
+		Use:   "connect <connection-token-file>",
+		Short: "Connect this skupper installation to that which issued the specified connectionToken",
+		Args: requiredArg("connection-token"),
 		Run: func(cmd *cobra.Command, args []string) {
 			connect(args[0], connectionName, initKubeConfig(namespace, context))
 		},
 	}
-	cmdConnect.Flags().StringVarP(&connectionName, "name", "", "", "Provide a specific name for the connection (used when removing it with disconnect)")
-	cmdConnect.MarkFlagRequired("name")//TODO: make this optional and generate unique name when not specified
+	cmdConnect.Flags().StringVarP(&connectionName, "connection-name", "", "", "Provide a specific name for the connection (used when removing it with disconnect)")
 
 	var cmdDisconnect = &cobra.Command{
-		Use:   "disconnect [name]",
-		Short: "Remove specified connection (NOT YET IMPLEMENTED)",
+		Use:   "disconnect <name>",
+		Short: "Remove specified connection",
 		Args: requiredArg("connection name"),
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("disconnect " + args[0] + " NOT YET IMPLEMENTED!")
+			disconnect(args[0], initKubeConfig(namespace, context))
 		},
 	}
 
 	var cmdStatus = &cobra.Command{
 		Use:   "status",
-		Short: "report status of skupper installation (NOT YET IMPLEMENTED)",
+		Short: "Report status of skupper installation",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("status NOT YET IMPLEMENTED!")
+			status(initKubeConfig(namespace, context))
 		},
 	}
 
 	var rootCmd = &cobra.Command{Use: "skupper"}
 	rootCmd.Version = version
-	rootCmd.AddCommand(cmdInit, cmdDelete, cmdSecret, cmdConnect, cmdDisconnect, cmdStatus)
+	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdStatus)
 	rootCmd.PersistentFlags().BoolVarP(&silent, "quiet", "q", false, "reduced output (NOT YET IMPLEMENTED)")
 	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "kubeconfig context to use")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "kubernetes namespace to use")
