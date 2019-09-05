@@ -54,18 +54,6 @@ type CertificateAuthority struct {
 	CrtData []byte
 }
 
-//func decodeDataElement(in []byte, name string) []byte {
-//	pemData, err := base64.StdEncoding.DecodeString(string(in))
-//	if err != nil {
-//		log.Fatal("failed to decode base64 data for " + name)
-//	}
-//	block, _ := pem.Decode(pemData)
-//	if block == nil {
-//		log.Fatal("failed to decode PEM block of type " + name)
-//	}
-//	return block.Bytes
-//}
-
 func decodeDataElement(in []byte, name string) []byte {
 	block, _ := pem.Decode(in)
 	if block == nil {
@@ -152,11 +140,9 @@ func generateSecret(name string, subject string, hosts string, ca *CertificateAu
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 		},
+		Type: "kubernetes.io/tls",
 		Data: map[string][]byte{},
 	}
-
-	//certString := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
-	//keyString := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(pemBlockForKey(priv)))
 
 	certString := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	keyString := pem.EncodeToMemory(pemBlockForKey(priv))
