@@ -1382,7 +1382,6 @@ func main() {
 	routev1.AddToScheme(scheme.Scheme)
 	routev1.AddToSchemeInCoreGroup(scheme.Scheme)
 
-	var silent bool
 	var context string
 	var namespace string
 
@@ -1510,7 +1509,6 @@ func main() {
 	var rootCmd = &cobra.Command{Use: "skupper"}
 	rootCmd.Version = version
 	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdStatus)
-	rootCmd.PersistentFlags().BoolVarP(&silent, "quiet", "q", false, "reduced output (NOT YET IMPLEMENTED)")
 	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "kubeconfig context to use")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "kubernetes namespace to use")
 	rootCmd.Execute()
