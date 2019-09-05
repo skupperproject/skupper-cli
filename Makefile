@@ -23,13 +23,13 @@ release/windows/skupper: cmd/skupper.go
 	GOOS=windows GOARCH=amd64 go build -o release/windows/skupper cmd/skupper.go
 
 release/windows.zip: release/windows/skupper
-	zip -D release/windows.zip release/windows/skupper
+	zip -j release/windows.zip release/windows/skupper
 
 release/darwin/skupper: cmd/skupper.go
 	GOOS=darwin GOARCH=amd64 go build -o release/darwin/skupper cmd/skupper.go
 
 release/darwin.zip: release/darwin/skupper
-	zip -D release/darwin.zip release/darwin/skupper
+	zip -j release/darwin.zip release/darwin/skupper
 
 
 
