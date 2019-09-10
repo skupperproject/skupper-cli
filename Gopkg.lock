@@ -2,10 +2,35 @@
 
 
 [[projects]]
+  name = "cloud.google.com/go"
+  packages = ["compute/metadata"]
+  revision = "d1af076dc3f6a314e9dd6610fe83b0f7afaff6d6"
+  version = "v0.45.1"
+
+[[projects]]
+  name = "github.com/Azure/go-autorest"
+  packages = [
+    "autorest",
+    "autorest/adal",
+    "autorest/azure",
+    "autorest/date",
+    "logger",
+    "tracing"
+  ]
+  revision = "69b4126ece6b5257e2f9b0017007d2334153655f"
+  version = "v13.0.1"
+
+[[projects]]
   name = "github.com/davecgh/go-spew"
   packages = ["spew"]
   revision = "8991bc29aa16c548c550c7ff78260e27b9ab7c73"
   version = "v1.1.1"
+
+[[projects]]
+  name = "github.com/dgrijalva/jwt-go"
+  packages = ["."]
+  revision = "06ea1031745cb8b3dab3f6a236daf2b0aa468b7e"
+  version = "v3.2.0"
 
 [[projects]]
   name = "github.com/gogo/protobuf"
@@ -43,6 +68,20 @@
   ]
   revision = "e73c7ec21d36ddb0711cb36d1502d18363b5c2c9"
   version = "v0.3.0"
+
+[[projects]]
+  name = "github.com/gophercloud/gophercloud"
+  packages = [
+    ".",
+    "openstack",
+    "openstack/identity/v2/tenants",
+    "openstack/identity/v2/tokens",
+    "openstack/identity/v3/tokens",
+    "openstack/utils",
+    "pagination"
+  ]
+  revision = "a84f8b330d669c6dff53ee9743a7579ac9541b69"
+  version = "v0.4.0"
 
 [[projects]]
   name = "github.com/imdario/mergo"
@@ -90,6 +129,12 @@
   version = "v3.9.0"
 
 [[projects]]
+  name = "github.com/pkg/errors"
+  packages = ["."]
+  revision = "ba968bfe8b2f7e042a574c888954fccecfa385b4"
+  version = "v0.8.1"
+
+[[projects]]
   name = "github.com/spf13/cobra"
   packages = ["."]
   revision = "f2b07da1e2c38d5f12845a4f607e2e1018cbb1f5"
@@ -125,7 +170,10 @@
   name = "golang.org/x/oauth2"
   packages = [
     ".",
-    "internal"
+    "google",
+    "internal",
+    "jws",
+    "jwt"
   ]
   revision = "0f29369cfe4552d0e4bcddc57cc75f4d7e672a33"
 
@@ -170,10 +218,13 @@
 [[projects]]
   name = "google.golang.org/appengine"
   packages = [
+    ".",
     "internal",
+    "internal/app_identity",
     "internal/base",
     "internal/datastore",
     "internal/log",
+    "internal/modules",
     "internal/remote_api",
     "internal/urlfetch",
     "urlfetch"
@@ -324,9 +375,15 @@
     "pkg/apis/clientauthentication/v1alpha1",
     "pkg/apis/clientauthentication/v1beta1",
     "pkg/version",
+    "plugin/pkg/client/auth",
+    "plugin/pkg/client/auth/azure",
     "plugin/pkg/client/auth/exec",
+    "plugin/pkg/client/auth/gcp",
+    "plugin/pkg/client/auth/oidc",
+    "plugin/pkg/client/auth/openstack",
     "rest",
     "rest/watch",
+    "third_party/forked/golang/template",
     "tools/auth",
     "tools/clientcmd",
     "tools/clientcmd/api",
@@ -339,6 +396,7 @@
     "util/connrotation",
     "util/flowcontrol",
     "util/homedir",
+    "util/jsonpath",
     "util/keyutil"
   ]
   revision = "88a2adca7e768f18b3557a5cd8b489b506089d86"
@@ -365,6 +423,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "db19a5ab37a8af28e256931378b788ec86005557cfeaee8f240edbed8bbec71d"
+  inputs-digest = "d8eb9fa8184187c3eb14d2e01dff16f1a73cfd2ad8dcb92ed6de1490e8ead3d5"
   solver-name = "gps-cdcl"
   solver-version = 1

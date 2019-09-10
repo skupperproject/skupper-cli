@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	routev1 "github.com/openshift/api/route/v1"
 	routev1client "github.com/openshift/client-go/route/clientset/versioned/typed/route/v1"
@@ -23,8 +24,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
         "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
         "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/spf13/cobra"
@@ -738,10 +741,11 @@ func ensureCA(name string, owner *metav1.OwnerReference, kube *KubeDetails) *cor
 	return nil
 }
 
-func ensureService(name string, ports []corev1.ServicePort, owner *metav1.OwnerReference, servingCert string, kube *KubeDetails) {
-	_, err :=kube.Standard.CoreV1().Services(kube.Namespace).Get(name, metav1.GetOptions{})
+func ensureService(name string, ports []corev1.ServicePort, owner *metav1.OwnerReference, servingCert string, serviceType string, kube *KubeDetails) (*corev1.Service, error) {
+	current, err :=kube.Standard.CoreV1().Services(kube.Namespace).Get(name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("Service", name, "already exists")
+		return current, nil
 	} else if errors.IsNotFound(err) {
 		labels := getLabels("router")
 		service := &corev1.Service{
@@ -757,6 +761,9 @@ func ensureService(name string, ports []corev1.ServicePort, owner *metav1.OwnerR
 				Ports:    ports,
 			},
 		}
+		if serviceType == string(corev1.ServiceTypeLoadBalancer) {
+			service.Spec.Type = corev1.ServiceTypeLoadBalancer
+		}
 		if servingCert != "" {
 			service.ObjectMeta.Annotations = map[string]string{
 				"service.alpha.openshift.io/serving-cert-secret-name": servingCert,
@@ -768,12 +775,16 @@ func ensureService(name string, ports []corev1.ServicePort, owner *metav1.OwnerR
 			}
 
 		}
-		_, err := kube.Standard.CoreV1().Services(kube.Namespace).Create(service)
+		created, err := kube.Standard.CoreV1().Services(kube.Namespace).Create(service)
 		if err != nil {
 			fmt.Println("Failed to create service", name, ": ", err.Error())
+			return nil, err
+		} else {
+			return created, nil
 		}
 	} else {
 		fmt.Println("Failed while checking service", name, ": ", err.Error())
+		return nil, err
 	}
 }
 
@@ -1006,7 +1017,7 @@ func initCommon(router *Router, volumes []string, kube *KubeDetails) *appsv1.Dep
 	ensureRoleBinding("skupper", "skupper-view", dep, kube)
 
 
-	ensureService("skupper-messaging", messagingServicePorts(), &owner, "", kube)
+	ensureService("skupper-messaging", messagingServicePorts(), &owner, "", "", kube)
 	if router.Console != "" {
 		servingCerts := ""
 		termination := routev1.TLSTerminationEdge
@@ -1032,8 +1043,10 @@ func initCommon(router *Router, volumes []string, kube *KubeDetails) *appsv1.Dep
 		}
 		ensureService("skupper-console", []corev1.ServicePort{
 			port,
-		}, &owner, servingCerts, kube)
-		ensureRoute("skupper-console", "skupper-console", "console", termination, &owner, kube)
+		}, &owner, servingCerts, "", kube)
+		if kube.Routes != nil {
+			ensureRoute("skupper-console", "skupper-console", "console", termination, &owner, kube)
+		} //else ??TODO?? create ingress
 	}
 
 	return dep
@@ -1054,11 +1067,35 @@ func initInterior(router *Router, kube *KubeDetails) *appsv1.Deployment {
 	dep := initCommon(router, []string{"skupper-amqps", "skupper-internal"}, kube)
 	owner := get_owner_reference(dep)
 	internalCa := ensureCA("skupper-internal-ca", &owner, kube)
-	ensureService("skupper-internal", internalServicePorts(), &owner, "", kube)
-	//TODO: handle loadbalancer service where routes are not available
-	hosts := ensureRoute("skupper-inter-router", "skupper-internal", "inter-router", routev1.TLSTerminationPassthrough, &owner, kube)
-	hosts += "," + ensureRoute("skupper-edge", "skupper-internal", "edge", routev1.TLSTerminationPassthrough, &owner, kube)
-	generateSecret(internalCa, "skupper-internal", router.Name, hosts, false, &owner, kube)
+	if kube.Routes != nil {
+		ensureService("skupper-internal", internalServicePorts(), &owner, "", "", kube)
+		//TODO: handle loadbalancer service where routes are not available
+		hosts := ensureRoute("skupper-inter-router", "skupper-internal", "inter-router", routev1.TLSTerminationPassthrough, &owner, kube)
+		hosts += "," + ensureRoute("skupper-edge", "skupper-internal", "edge", routev1.TLSTerminationPassthrough, &owner, kube)
+		generateSecret(internalCa, "skupper-internal", router.Name, hosts, false, &owner, kube)
+	} else {
+		service, err := ensureService("skupper-internal", internalServicePorts(), &owner, "", "LoadBalancer", kube)
+		if err == nil {
+			host := getLoadBalancerHostOrIp(service)
+			for i := 0; host == "" && i < 120; i++ {
+				if i % 10 == 0 {
+					fmt.Println("Waiting for LoadBalancer IP or Hostname...")
+				}
+				time.Sleep(time.Second)
+				service, err = kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
+				host = getLoadBalancerHostOrIp(service)
+			}
+			if host == "" {
+				log.Fatal("Could not get LoadBalancer IP or Hostname for service skupper-internal")
+			} else {
+				if len(host) < 64 {
+					generateSecret(internalCa, "skupper-internal", host, host, false, &owner, kube)
+				} else {
+					generateSecret(internalCa, "skupper-internal", router.Name, host, false, &owner, kube)
+				}
+			}
+		}
+	}
 	return dep
 }
 
@@ -1150,14 +1187,14 @@ func status(kube *KubeDetails) {
 	if err == nil {
 		mode := get_router_mode(current)
 		connectors := list_connectors(mode, kube)
-		modedesc := "."
+		modedesc := ""
 		if mode == RouterModeEdge {
-			modedesc = "in edge mode."
+			modedesc = " in edge mode"
 		}
 		if len(connectors) == 0 {
-			fmt.Println("skupper enabled for", kube.Namespace + modedesc, "It is not connected to any other sites.")
+			fmt.Println("skupper enabled for", kube.Namespace + modedesc + ".", "It is not connected to any other sites.")
 		} else {
-			fmt.Println("skupper enabled for", kube.Namespace, modedesc, "and connected to:")
+			fmt.Println("skupper enabled for", kube.Namespace + modedesc, "and connected to:")
 			fmt.Println()
 			for _, c := range connectors {
 				fmt.Println("    ", c.Host +":" + c.Port, " (name=" + c.Name + ")")
@@ -1272,6 +1309,38 @@ func connect(secretFile string, connectorName string, kube *KubeDetails) {
 	}
 }
 
+func annotateConnectionToken(secret *corev1.Secret, role string, host string, port string) {
+	if secret.ObjectMeta.Annotations == nil {
+		secret.ObjectMeta.Annotations = map[string]string{}
+	}
+	secret.ObjectMeta.Annotations[role + "-host"] = host
+	secret.ObjectMeta.Annotations[role + "-port"] = port
+}
+
+func getLoadBalancerHostOrIp(service *corev1.Service) string {
+	for _, i := range service.Status.LoadBalancer.Ingress {
+		if i.IP != "" {
+			return i.IP
+		} else if i.Hostname != "" {
+			return i.Hostname
+		}
+	}
+	return ""
+}
+
+func getLoadBalancerNodePort(service *corev1.Service, name string) string {
+	for _, p := range service.Spec.Ports {
+		if p.Name == name {
+			if p.NodePort > 0 {
+				return strconv.Itoa(int(p.NodePort))
+			} else {
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
 func generateConnectSecret(subject string, secretFile string, kube *KubeDetails) {
 	//verify that local deployment is interior
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
@@ -1279,36 +1348,67 @@ func generateConnectSecret(subject string, secretFile string, kube *KubeDetails)
 		if isInterior(current) {
 			caSecret, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get("skupper-internal-ca", metav1.GetOptions{})
 			if err == nil {
+				var secret corev1.Secret
+				ok := false
 				//get the host and port for inter-router and edge
-				//TODO: handle loadbalancer service where routes are not available
-				edgeRoute, err := kube.Routes.Routes(kube.Namespace).Get("skupper-edge", metav1.GetOptions{})
-				if err != nil {
-					log.Fatal("Could not retrieve edge route: " + err.Error())
+				if kube.Routes != nil {
+					edgeRoute, err := kube.Routes.Routes(kube.Namespace).Get("skupper-edge", metav1.GetOptions{})
+					if err != nil {
+						log.Fatal("Could not retrieve edge route: " + err.Error())
+					}
+					interRouterRoute, err := kube.Routes.Routes(kube.Namespace).Get("skupper-inter-router", metav1.GetOptions{})
+					if err != nil {
+						log.Fatal("Could not retrieve inter router route: " + err.Error())
+					}
+					hosts := edgeRoute.Spec.Host + "," + interRouterRoute.Spec.Host
+					secret = certs.GenerateSecret(subject, subject, hosts, caSecret)
+					//add annotations for host and port for both edge and inter-router connections
+					annotateConnectionToken(&secret, "inter-router", interRouterRoute.Spec.Host, "443")
+					annotateConnectionToken(&secret, "edge", edgeRoute.Spec.Host, "443")
+					ok = true
+				} else {
+					//TODO: handle loadbalancer service where routes are not available
+					service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
+					if err != nil {
+						log.Fatal("Could not get service", err.Error())
+					} else {
+						host := getLoadBalancerHostOrIp(service)
+						if host != "" {
+							/*
+							interRouterPort := getLoadBalancerNodePort(service, "inter-router")
+							edgePort := getLoadBalancerNodePort(service, "edge")
+							if interRouterPort == "" {
+								fmt.Println("LoadBalancer NodePort not set for inter-router port on service", service.ObjectMeta.Name)
+							} else if edgePort == "" {
+								fmt.Println("LoadBalancer NodePort not set for edge port on service", service.ObjectMeta.Name)
+							} else {
+								secret = certs.GenerateSecret(subject, subject, host, caSecret)
+								annotateConnectionToken(&secret, "inter-router", host, interRouterPort)
+								annotateConnectionToken(&secret, "edge", host, edgePort)
+								ok = true
+							}
+                                                        */
+							secret = certs.GenerateSecret(subject, subject, host, caSecret)
+							annotateConnectionToken(&secret, "inter-router", host, "55671")
+							annotateConnectionToken(&secret, "edge", host, "45671")
+							ok = true
+						} else {
+							fmt.Println("LoadBalancer Host/IP not yet allocated for service", service.ObjectMeta.Name)
+						}
+					}
 				}
-				interRouterRoute, err := kube.Routes.Routes(kube.Namespace).Get("skupper-inter-router", metav1.GetOptions{})
-				if err != nil {
-					log.Fatal("Could not retrieve inter router route: " + err.Error())
-				}
-				hosts := edgeRoute.Spec.Host + "," + interRouterRoute.Spec.Host
-				secret:= certs.GenerateSecret(subject, subject, hosts, caSecret)
-				//add annotations for host and port for both edge and inter-router connections
-				if secret.ObjectMeta.Annotations == nil {
-					secret.ObjectMeta.Annotations = map[string]string{}
-				}
-				secret.ObjectMeta.Annotations["inter-router-host"] = interRouterRoute.Spec.Host
-				secret.ObjectMeta.Annotations["inter-router-port"] = "443"
-				secret.ObjectMeta.Annotations["edge-host"] = edgeRoute.Spec.Host
-				secret.ObjectMeta.Annotations["edge-port"] = "443"
 
-				//generate yaml and save it to the specified path
-				s := json.NewYAMLSerializer(json.DefaultMetaFactory, scheme.Scheme, scheme.Scheme)
-				out, err := os.Create(secretFile)
-				if err != nil {
-					log.Fatal("Could not write to file " + secretFile + ": " + err.Error())
-				}
-				err = s.Encode(&secret, out)
-				if err != nil {
-					log.Fatal("Could not write out generated secret: " + err.Error())
+				if ok {
+					//generate yaml and save it to the specified path
+					s := json.NewYAMLSerializer(json.DefaultMetaFactory, scheme.Scheme, scheme.Scheme)
+					out, err := os.Create(secretFile)
+					if err != nil {
+						log.Fatal("Could not write to file " + secretFile + ": " + err.Error())
+					}
+					err = s.Encode(&secret, out)
+					if err != nil {
+						log.Fatal("Could not write out generated secret: " + err.Error())
+					}
 				}
 			} else if errors.IsNotFound(err) {
 				fmt.Println("Internal CA does not exist: " + err.Error())
@@ -1361,10 +1461,14 @@ func initKubeConfig(namespace string, context string) *KubeDetails {
         if err != nil {
                 panic(err)
         }
-        details.Routes, err = routev1client.NewForConfig(restconfig)
-        if err != nil {
-                panic(err.Error())
-        }
+	dc, err := discovery.NewDiscoveryClientForConfig(restconfig)
+	resources, err := dc.ServerResourcesForGroupVersion("route.openshift.io/v1")
+	if err == nil && len(resources.APIResources) > 0 {
+		details.Routes, err = routev1client.NewForConfig(restconfig)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
 
 	if namespace == "" {
 		details.Namespace, _, err = kubeconfig.Namespace()
