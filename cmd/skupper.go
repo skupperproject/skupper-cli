@@ -22,16 +22,21 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+        "k8s.io/apimachinery/pkg/runtime/serializer"
         "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
         "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/spf13/cobra"
 	"github.com/skupperproject/skupper-cli/pkg/certs"
+	"github.com/skupperproject/skupper-cli/pkg/router"
+	"github.com/skupperproject/skupper-cli/pkg/kube"
 )
 
 var version = "undefined"
@@ -529,9 +534,16 @@ func routerContainer(router *Router) corev1.Container {
 }
 
 func getLabels(component string) map[string]string{
+	//TODO: cleanup handling of labels
+	application := "skupper"
+	if component == "router" {
+		//the automeshing function of the router image expects the application
+		//to be used as a unique label for identifying routers to connect to
+		application = "skupper-router"
+	}
 	return map[string]string{
-		"application":    "skupper",
-		"skupper-component": component,
+		"application": application,
+		"skupper.io/component": component,
 	}
 }
 
@@ -1182,22 +1194,42 @@ func get_router_mode(router *appsv1.Deployment) RouterMode {
 	}
 }
 
-func status(kube *KubeDetails) {
+func status(kube *KubeDetails, listConnectors bool) {
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
 	if err == nil {
 		mode := get_router_mode(current)
-		connectors := list_connectors(mode, kube)
-		modedesc := ""
+		var modedesc string
 		if mode == RouterModeEdge {
 			modedesc = " in edge mode"
 		}
-		if len(connectors) == 0 {
-			fmt.Println("skupper enabled for", kube.Namespace + modedesc + ".", "It is not connected to any other sites.")
+		if current.Status.ReadyReplicas == 0 {
+			fmt.Printf("Skupper enabled for %q%s. Status pending...", kube.Namespace, modedesc)
 		} else {
-			fmt.Println("skupper enabled for", kube.Namespace + modedesc, "and connected to:")
+			connected, err := router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
+			if err != nil {
+				log.Fatal(err)
+			} else {
+				if connected.Total == 0 {
+					fmt.Printf("Skupper enabled for %q%s. It is not connected to any other sites.", kube.Namespace, modedesc)
+				} else if connected.Total == connected.Direct {
+					fmt.Printf("Skupper enabled for %q%s. It is connected to %d other sites.", kube.Namespace, modedesc, connected.Total)
+				} else {
+					fmt.Printf("Skupper enabled for %q%s. It is connected to %d other sites (%d indirectly).", kube.Namespace, modedesc, connected.Total, connected.Indirect)
+				}
+			}
+		}
+		fmt.Println()
+		if listConnectors {
 			fmt.Println()
-			for _, c := range connectors {
-				fmt.Println("    ", c.Host +":" + c.Port, " (name=" + c.Name + ")")
+			connectors := list_connectors(mode, kube)
+			if len(connectors) == 0 {
+				fmt.Println("There are no connectors defined.")
+			} else {
+				fmt.Println("Connectors:")
+				for _, c := range connectors {
+					fmt.Printf("    %s:%s (name=%s)", c.Host, c.Port, c.Name)
+					fmt.Println()
+				}
 			}
 		}
 	} else if errors.IsNotFound(err) {
@@ -1441,6 +1473,7 @@ type KubeDetails struct {
 	Namespace string
 	Standard *kubernetes.Clientset
 	Routes *routev1client.RouteV1Client
+	RestConfig *restclient.Config
 }
 
 func initKubeConfig(namespace string, context string) *KubeDetails {
@@ -1457,6 +1490,10 @@ func initKubeConfig(namespace string, context string) *KubeDetails {
                 panic(err)
         }
 
+	restconfig.ContentConfig.GroupVersion = &schema.GroupVersion{Version:"v1"}
+	restconfig.APIPath = "/api"
+	restconfig.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: scheme.Codecs}
+	details.RestConfig = restconfig
         details.Standard, err = kubernetes.NewForConfig(restconfig)
         if err != nil {
                 panic(err)
@@ -1601,18 +1638,34 @@ func main() {
 		},
 	}
 
+	var listConnectors bool
 	var cmdStatus = &cobra.Command{
 		Use:   "status",
 		Short: "Report status of skupper installation",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			status(initKubeConfig(namespace, context))
+			status(initKubeConfig(namespace, context), listConnectors)
+		},
+	}
+	cmdStatus.Flags().BoolVarP(&listConnectors, "list-connectors", "", false, "List configured outgoing connections")
+
+	var cmdVersion = &cobra.Command{
+		Use:   "version",
+		Short: "Report version of skupper cli and services",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			kubeConfig := initKubeConfig(namespace, context)
+			routerVersion := kube.GetComponentVersion(kubeConfig.Namespace, kubeConfig.Standard, "router")
+			proxyControllerVersion := kube.GetComponentVersion(kubeConfig.Namespace, kubeConfig.Standard, "proxy-controller")
+			fmt.Printf("client version           %s\n", version)
+			fmt.Printf("router version           %s\n", routerVersion)
+			fmt.Printf("proxy-controller version %s\n", proxyControllerVersion)
 		},
 	}
 
 	var rootCmd = &cobra.Command{Use: "skupper"}
 	rootCmd.Version = version
-	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdStatus)
+	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdStatus, cmdVersion)
 	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "kubeconfig context to use")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "kubernetes namespace to use")
 	rootCmd.Execute()
