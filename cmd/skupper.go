@@ -1075,11 +1075,14 @@ func initEdge(router *Router, kube *KubeDetails) *appsv1.Deployment {
 	return initCommon(router, []string{"skupper-amqps"}, kube)
 }
 
-func initInterior(router *Router, kube *KubeDetails) *appsv1.Deployment {
+func initInterior(router *Router, kube *KubeDetails, clusterLocal bool) *appsv1.Deployment {
 	dep := initCommon(router, []string{"skupper-amqps", "skupper-internal"}, kube)
 	owner := get_owner_reference(dep)
 	internalCa := ensureCA("skupper-internal-ca", &owner, kube)
-	if kube.Routes != nil {
+	if clusterLocal {
+		ensureService("skupper-internal", internalServicePorts(), &owner, "", "", kube)
+		generateSecret(internalCa, "skupper-internal", "skupper-internal", "skupper-internal." + kube.Namespace, false, &owner, kube)
+	} else if kube.Routes != nil {
 		ensureService("skupper-internal", internalServicePorts(), &owner, "", "", kube)
 		//TODO: handle loadbalancer service where routes are not available
 		hosts := ensureRoute("skupper-inter-router", "skupper-internal", "inter-router", routev1.TLSTerminationPassthrough, &owner, kube)
@@ -1090,7 +1093,7 @@ func initInterior(router *Router, kube *KubeDetails) *appsv1.Deployment {
 		if err == nil {
 			host := getLoadBalancerHostOrIp(service)
 			for i := 0; host == "" && i < 120; i++ {
-				if i % 10 == 0 {
+				if i == 0 {
 					fmt.Println("Waiting for LoadBalancer IP or Hostname...")
 				}
 				time.Sleep(time.Second)
@@ -1098,7 +1101,7 @@ func initInterior(router *Router, kube *KubeDetails) *appsv1.Deployment {
 				host = getLoadBalancerHostOrIp(service)
 			}
 			if host == "" {
-				log.Fatal("Could not get LoadBalancer IP or Hostname for service skupper-internal")
+				log.Fatal("Could not get LoadBalancer IP or Hostname for service skupper-internal. Retry after resolving or run init with --cluster-local or --edge.")
 			} else {
 				if len(host) < 64 {
 					generateSecret(internalCa, "skupper-internal", host, host, false, &owner, kube)
@@ -1399,34 +1402,31 @@ func generateConnectSecret(subject string, secretFile string, kube *KubeDetails)
 					annotateConnectionToken(&secret, "edge", edgeRoute.Spec.Host, "443")
 					ok = true
 				} else {
-					//TODO: handle loadbalancer service where routes are not available
 					service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
 					if err != nil {
 						log.Fatal("Could not get service", err.Error())
-					} else {
+					} else if service.Spec.Type == corev1.ServiceTypeLoadBalancer {
 						host := getLoadBalancerHostOrIp(service)
 						if host != "" {
-							/*
-							interRouterPort := getLoadBalancerNodePort(service, "inter-router")
-							edgePort := getLoadBalancerNodePort(service, "edge")
-							if interRouterPort == "" {
-								fmt.Println("LoadBalancer NodePort not set for inter-router port on service", service.ObjectMeta.Name)
-							} else if edgePort == "" {
-								fmt.Println("LoadBalancer NodePort not set for edge port on service", service.ObjectMeta.Name)
-							} else {
-								secret = certs.GenerateSecret(subject, subject, host, caSecret)
-								annotateConnectionToken(&secret, "inter-router", host, interRouterPort)
-								annotateConnectionToken(&secret, "edge", host, edgePort)
-								ok = true
-							}
-                                                        */
 							secret = certs.GenerateSecret(subject, subject, host, caSecret)
 							annotateConnectionToken(&secret, "inter-router", host, "55671")
 							annotateConnectionToken(&secret, "edge", host, "45671")
 							ok = true
 						} else {
-							fmt.Println("LoadBalancer Host/IP not yet allocated for service", service.ObjectMeta.Name)
+							fmt.Printf("LoadBalancer Host/IP not yet allocated for service %s, token will only be valid for local cluster", service.ObjectMeta.Name)
+							fmt.Println()
+							host := fmt.Sprintf("skupper-internal.%s", kube.Namespace)
+							secret = certs.GenerateSecret(subject, subject, host, caSecret)
+							annotateConnectionToken(&secret, "inter-router", host, "55671")
+							annotateConnectionToken(&secret, "edge", host, "45671")
+							ok = true
 						}
+					} else {
+						host := fmt.Sprintf("skupper-internal.%s", kube.Namespace)
+						secret = certs.GenerateSecret(subject, subject, host, caSecret)
+						annotateConnectionToken(&secret, "inter-router", host, "55671")
+						annotateConnectionToken(&secret, "edge", host, "45671")
+						ok = true
 					}
 				}
 
@@ -1534,6 +1534,7 @@ func main() {
 	var routerConsoleAuthMode string
 	var routerConsoleUser string
 	var routerConsolePassword string
+	var clusterLocal bool
 	var cmdInit = &cobra.Command{
 		Use:   "init",
 		Short: "Initialise skupper installation",
@@ -1576,7 +1577,7 @@ func main() {
 			kube := initKubeConfig(namespace, context)
 			var dep *appsv1.Deployment
 			if !isEdge {
-				dep = initInterior(&router, kube)
+				dep = initInterior(&router, kube, clusterLocal)
 			} else {
 				router.Mode = RouterModeEdge
 				dep = initEdge(&router, kube)
@@ -1595,6 +1596,7 @@ func main() {
 	cmdInit.Flags().StringVarP(&routerConsoleAuthMode, "router-console-auth", "", "", "Authentication mode for router console. One of: 'openshift', 'internal', 'unsecured'")
 	cmdInit.Flags().StringVarP(&routerConsoleUser, "router-console-user", "", "", "Router console user. Valid only when --router-console-auth=internal")
 	cmdInit.Flags().StringVarP(&routerConsolePassword, "router-console-password", "", "", "Router console user. Valid only when --router-console-auth=internal")
+	cmdInit.Flags().BoolVarP(&clusterLocal, "cluster-local", "", false, "Set up skupper to only accept connections from within the local cluster.")
 
 	var cmdDelete = &cobra.Command{
 		Use:   "delete",
