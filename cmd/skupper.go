@@ -1487,7 +1487,7 @@ func initKubeConfig(namespace string, context string) *KubeDetails {
         )
         restconfig, err := kubeconfig.ClientConfig()
         if err != nil {
-                panic(err)
+                log.Fatal(err)
         }
 
 	restconfig.ContentConfig.GroupVersion = &schema.GroupVersion{Version:"v1"}
@@ -1496,21 +1496,21 @@ func initKubeConfig(namespace string, context string) *KubeDetails {
 	details.RestConfig = restconfig
         details.Standard, err = kubernetes.NewForConfig(restconfig)
         if err != nil {
-                panic(err)
+                log.Fatal(err)
         }
 	dc, err := discovery.NewDiscoveryClientForConfig(restconfig)
 	resources, err := dc.ServerResourcesForGroupVersion("route.openshift.io/v1")
 	if err == nil && len(resources.APIResources) > 0 {
 		details.Routes, err = routev1client.NewForConfig(restconfig)
 		if err != nil {
-			panic(err.Error())
+			log.Fatal(err.Error())
 		}
 	}
 
 	if namespace == "" {
 		details.Namespace, _, err = kubeconfig.Namespace()
 		if err != nil {
-			panic(err)
+			log.Fatal(err)
 		}
 	} else {
 		details.Namespace = namespace
