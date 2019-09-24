@@ -1209,8 +1209,12 @@ func status(kube *KubeDetails, listConnectors bool) {
 			fmt.Printf("Skupper enabled for %q%s. Status pending...", kube.Namespace, modedesc)
 		} else {
 			connected, err := router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
+			for i :=0; i < 5 && err != nil; i++ {
+				time.Sleep(500*time.Millisecond)
+				connected, err = router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
+			}
 			if err != nil {
-				log.Fatal(err)
+				log.Fatal("Skupper enabled for %q%s. Unable to determine connectivity:", err)
 			} else {
 				if connected.Total == 0 {
 					fmt.Printf("Skupper enabled for %q%s. It is not connected to any other sites.", kube.Namespace, modedesc)
@@ -1376,6 +1380,79 @@ func getLoadBalancerNodePort(service *corev1.Service, name string) string {
 	return ""
 }
 
+type HostPort struct {
+	Host string
+	Port string
+}
+
+type RouterHostPorts struct {
+	Edge        HostPort
+	InterRouter HostPort
+	Hosts       string
+}
+
+func configureHostPortsFromRoutes(result *RouterHostPorts, kube *KubeDetails) (bool, error) {
+	if kube.Routes == nil {
+		return false, nil
+	} else {
+		interRouterRoute, err1 := kube.Routes.Routes(kube.Namespace).Get("skupper-inter-router", metav1.GetOptions{})
+		edgeRoute, err2 := kube.Routes.Routes(kube.Namespace).Get("skupper-edge", metav1.GetOptions{})
+		if err1 != nil && err2 != nil && errors.IsNotFound(err1) && errors.IsNotFound(err2) {
+			return false, nil
+		} else if err1 != nil {
+			return false, err1
+		} else if err2 != nil {
+			return false, err2
+		} else {
+			result.Edge.Host = edgeRoute.Spec.Host
+			result.Edge.Port = "443"
+			result.InterRouter.Host = interRouterRoute.Spec.Host
+			result.InterRouter.Port = "443"
+			result.Hosts = edgeRoute.Spec.Host + "," + interRouterRoute.Spec.Host
+			return true, nil
+		}
+	}
+}
+
+func configureHostPorts(result *RouterHostPorts, kube *KubeDetails) bool {
+	ok, err := configureHostPortsFromRoutes(result, kube)
+	if err != nil {
+		log.Fatal("Could not get routes", err.Error())
+		return false
+	} else if ok {
+		return ok
+	} else {
+		service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
+		if err != nil {
+			log.Fatal("Could not get service", err.Error())
+			return false
+		} else {
+			if service.Spec.Type == corev1.ServiceTypeLoadBalancer {
+				host := getLoadBalancerHostOrIp(service)
+				if host != "" {
+					result.Hosts = host
+					result.InterRouter.Host = host
+					result.InterRouter.Port = "55671"
+					result.Edge.Host = host
+					result.Edge.Port = "45671"
+					return true
+				} else {
+					fmt.Printf("LoadBalancer Host/IP not yet allocated for service %s, ", service.ObjectMeta.Name)
+				}
+			}
+			fmt.Printf("token will only be valid for local cluster")
+			fmt.Println()
+			host := fmt.Sprintf("skupper-internal.%s", kube.Namespace)
+			result.Hosts = host
+			result.InterRouter.Host = host
+			result.InterRouter.Port = "55671"
+			result.Edge.Host = host
+			result.Edge.Port = "45671"
+			return true
+		}
+	}
+}
+
 func generateConnectSecret(subject string, secretFile string, kube *KubeDetails) {
 	//verify that local deployment is interior
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
@@ -1383,54 +1460,13 @@ func generateConnectSecret(subject string, secretFile string, kube *KubeDetails)
 		if isInterior(current) {
 			caSecret, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get("skupper-internal-ca", metav1.GetOptions{})
 			if err == nil {
-				var secret corev1.Secret
-				ok := false
 				//get the host and port for inter-router and edge
-				if kube.Routes != nil {
-					edgeRoute, err := kube.Routes.Routes(kube.Namespace).Get("skupper-edge", metav1.GetOptions{})
-					if err != nil {
-						log.Fatal("Could not retrieve edge route: " + err.Error())
-					}
-					interRouterRoute, err := kube.Routes.Routes(kube.Namespace).Get("skupper-inter-router", metav1.GetOptions{})
-					if err != nil {
-						log.Fatal("Could not retrieve inter router route: " + err.Error())
-					}
-					hosts := edgeRoute.Spec.Host + "," + interRouterRoute.Spec.Host
-					secret = certs.GenerateSecret(subject, subject, hosts, caSecret)
+				var hostPorts RouterHostPorts
+				if configureHostPorts(&hostPorts, kube) {
+					secret := certs.GenerateSecret(subject, subject, hostPorts.Hosts, caSecret)
 					//add annotations for host and port for both edge and inter-router connections
-					annotateConnectionToken(&secret, "inter-router", interRouterRoute.Spec.Host, "443")
-					annotateConnectionToken(&secret, "edge", edgeRoute.Spec.Host, "443")
-					ok = true
-				} else {
-					service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
-					if err != nil {
-						log.Fatal("Could not get service", err.Error())
-					} else if service.Spec.Type == corev1.ServiceTypeLoadBalancer {
-						host := getLoadBalancerHostOrIp(service)
-						if host != "" {
-							secret = certs.GenerateSecret(subject, subject, host, caSecret)
-							annotateConnectionToken(&secret, "inter-router", host, "55671")
-							annotateConnectionToken(&secret, "edge", host, "45671")
-							ok = true
-						} else {
-							fmt.Printf("LoadBalancer Host/IP not yet allocated for service %s, token will only be valid for local cluster", service.ObjectMeta.Name)
-							fmt.Println()
-							host := fmt.Sprintf("skupper-internal.%s", kube.Namespace)
-							secret = certs.GenerateSecret(subject, subject, host, caSecret)
-							annotateConnectionToken(&secret, "inter-router", host, "55671")
-							annotateConnectionToken(&secret, "edge", host, "45671")
-							ok = true
-						}
-					} else {
-						host := fmt.Sprintf("skupper-internal.%s", kube.Namespace)
-						secret = certs.GenerateSecret(subject, subject, host, caSecret)
-						annotateConnectionToken(&secret, "inter-router", host, "55671")
-						annotateConnectionToken(&secret, "edge", host, "45671")
-						ok = true
-					}
-				}
-
-				if ok {
+					annotateConnectionToken(&secret, "inter-router", hostPorts.InterRouter.Host, hostPorts.InterRouter.Port)
+					annotateConnectionToken(&secret, "edge", hostPorts.Edge.Host, hostPorts.Edge.Port)
 					//generate yaml and save it to the specified path
 					s := json.NewYAMLSerializer(json.DefaultMetaFactory, scheme.Scheme, scheme.Scheme)
 					out, err := os.Create(secretFile)
