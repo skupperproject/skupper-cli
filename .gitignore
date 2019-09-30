@@ -5,9 +5,31 @@
 *.so
 *.dylib
 *~
+skupper
 
 # Test binary, build with `go test -c`
 *.test
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+
+# IDEs and editors
+/.idea
+.idea
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+*.launch
+.settings/
+.vscode/
+.checkstyle
+.pmd
+.pmdruleset.xml
+.factorypath
+.sts4-cache/
+
+# System Files
+.DS_Store
+Thumbs.db
