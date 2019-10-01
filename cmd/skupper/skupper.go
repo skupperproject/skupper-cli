@@ -1094,7 +1094,7 @@ func initInterior(router *Router, kube *KubeDetails, clusterLocal bool) *appsv1.
 			host := getLoadBalancerHostOrIp(service)
 			for i := 0; host == "" && i < 120; i++ {
 				if i == 0 {
-					fmt.Println("Waiting for LoadBalancer IP or Hostname...")
+					fmt.Println("Waiting for LoadBalancer IP or hostname...")
 				}
 				time.Sleep(time.Second)
 				service, err = kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
@@ -1206,7 +1206,7 @@ func status(kube *KubeDetails, listConnectors bool) {
 			modedesc = " in edge mode"
 		}
 		if current.Status.ReadyReplicas == 0 {
-			fmt.Printf("Skupper enabled for %q%s. Status pending...", kube.Namespace, modedesc)
+			fmt.Printf("Skupper enabled for namespace %q%s. Status pending...", kube.Namespace, modedesc)
 		} else {
 			connected, err := router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
 			for i :=0; i < 5 && err != nil; i++ {
@@ -1214,14 +1214,14 @@ func status(kube *KubeDetails, listConnectors bool) {
 				connected, err = router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
 			}
 			if err != nil {
-				log.Fatal("Skupper enabled for %q%s. Unable to determine connectivity:", err)
+				log.Fatal("Skupper enabled for namespace %q%s. Unable to determine connectivity:%s", kube.Namespace, err)
 			} else {
 				if connected.Total == 0 {
-					fmt.Printf("Skupper enabled for %q%s. It is not connected to any other sites.", kube.Namespace, modedesc)
+					fmt.Printf("Skupper enabled for namespace %q%s. It is not connected to any other sites.", kube.Namespace, modedesc)
 				} else if connected.Total == connected.Direct {
-					fmt.Printf("Skupper enabled for %q%s. It is connected to %d other sites.", kube.Namespace, modedesc, connected.Total)
+					fmt.Printf("Skupper enabled for namespace %q%s. It is connected to %d other sites.", kube.Namespace, modedesc, connected.Total)
 				} else {
-					fmt.Printf("Skupper enabled for %q%s. It is connected to %d other sites (%d indirectly).", kube.Namespace, modedesc, connected.Total, connected.Indirect)
+					fmt.Printf("Skupper enabled for namespace %q%s. It is connected to %d other sites (%d indirectly).", kube.Namespace, modedesc, connected.Total, connected.Indirect)
 				}
 			}
 		}
@@ -1337,6 +1337,9 @@ func connect(secretFile string, connectorName string, kube *KubeDetails) {
 			_, err = kube.Standard.AppsV1().Deployments(kube.Namespace).Update(current)
 			if err != nil {
 				fmt.Println("Failed to update router deployment: ", err.Error())
+			} else {
+				fmt.Printf("Skupper configured to connect to %s:%s (name=%s)", connector.Host, connector.Port, connector.Name)
+				fmt.Println()
 			}
 		} else if errors.IsAlreadyExists(err) {
 			fmt.Println("A connector secret of that name already exist, please choose a different name")
@@ -1389,6 +1392,7 @@ type RouterHostPorts struct {
 	Edge        HostPort
 	InterRouter HostPort
 	Hosts       string
+	LocalOnly   bool
 }
 
 func configureHostPortsFromRoutes(result *RouterHostPorts, kube *KubeDetails) (bool, error) {
@@ -1440,8 +1444,7 @@ func configureHostPorts(result *RouterHostPorts, kube *KubeDetails) bool {
 					fmt.Printf("LoadBalancer Host/IP not yet allocated for service %s, ", service.ObjectMeta.Name)
 				}
 			}
-			fmt.Printf("token will only be valid for local cluster")
-			fmt.Println()
+			result.LocalOnly = true
 			host := fmt.Sprintf("skupper-internal.%s", kube.Namespace)
 			result.Hosts = host
 			result.InterRouter.Host = host
@@ -1476,6 +1479,14 @@ func generateConnectSecret(subject string, secretFile string, kube *KubeDetails)
 					err = s.Encode(&secret, out)
 					if err != nil {
 						log.Fatal("Could not write out generated secret: " + err.Error())
+					} else {
+						var extra string
+						if hostPorts.LocalOnly {
+							extra = "(Note: token will only be valid for local cluster)"
+						}
+						fmt.Printf("Connection token written to %s %s", secretFile, extra)
+						fmt.Println()
+
 					}
 				}
 			} else if errors.IsNotFound(err) {
@@ -1621,7 +1632,7 @@ func main() {
 			if enableProxyController {
 				initProxyController(enableServiceSync, dep, kube)
 			}
-			fmt.Println("Skupper is now installed in '" + kube.Namespace + "'.  Use 'skupper status' to get more information.")
+			fmt.Println("Skupper is now installed in namespace '" + kube.Namespace + "'.  Use 'skupper status' to get more information.")
 		},
 	}
 	cmdInit.Flags().StringVarP(&skupperName, "id", "", "", "Provide a specific identity for the skupper installation")
