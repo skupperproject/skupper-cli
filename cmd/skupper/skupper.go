@@ -1218,6 +1218,8 @@ func status(kube *KubeDetails, listConnectors bool) {
 			} else {
 				if connected.Total == 0 {
 					fmt.Printf("Skupper enabled for namespace %q%s. It is not connected to any other sites.", kube.Namespace, modedesc)
+				} else if connected.Total == 1 {
+					fmt.Printf("Skupper enabled for namespace %q%s. It is connected to 1 other site.", kube.Namespace, modedesc)
 				} else if connected.Total == connected.Direct {
 					fmt.Printf("Skupper enabled for namespace %q%s. It is connected to %d other sites.", kube.Namespace, modedesc, connected.Total)
 				} else {
