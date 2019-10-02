@@ -1297,14 +1297,18 @@ func disconnect(name string, kube *KubeDetails) {
 func connect(secretFile string, connectorName string, kube *KubeDetails) {
 	yaml, err := ioutil.ReadFile(secretFile)
         if err != nil {
-                panic(err)
+                fmt.Printf("Could not read connection token: %s", err)
+		fmt.Println()
+		return
         }
 	s := json.NewYAMLSerializer(json.DefaultMetaFactory, scheme.Scheme,
                 scheme.Scheme)
         var secret corev1.Secret
         _, _, err = s.Decode(yaml, nil, &secret)
         if err != nil {
-                panic(err)
+                fmt.Printf("Could not parse connection token: %s", err)
+		fmt.Println()
+		return
         }
 	//determine if local deployment is edge or interior
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
