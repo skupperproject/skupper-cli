@@ -1297,7 +1297,7 @@ func disconnect(name string, kube *KubeDetails) {
 func connect(secretFile string, connectorName string, kube *KubeDetails) {
 	yaml, err := ioutil.ReadFile(secretFile)
         if err != nil {
-                fmt.Printf("Could not read connection token: %s", err)
+		fmt.Printf("Could not read connection token: %s", err)
 		fmt.Println()
 		return
         }
