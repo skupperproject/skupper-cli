@@ -3,7 +3,7 @@ yaml-templates:
   branch_filters: &branch_filters
     filters:
       branches:
-        ignore: /.*/
+        only: /.*/
       tags:
         only: /v.*/
 
