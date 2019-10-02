@@ -1214,7 +1214,7 @@ func status(kube *KubeDetails, listConnectors bool) {
 				connected, err = router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
 			}
 			if err != nil {
-				log.Fatal("Skupper enabled for namespace %q%s. Unable to determine connectivity:%s", kube.Namespace, err)
+				log.Fatalf("Skupper enabled for namespace %s. Unable to determine connectivity:%s\n", kube.Namespace, err)
 			} else {
 				if connected.Total == 0 {
 					fmt.Printf("Skupper enabled for namespace %q%s. It is not connected to any other sites.", kube.Namespace, modedesc)
