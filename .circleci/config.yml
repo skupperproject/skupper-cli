@@ -32,8 +32,8 @@ yaml-templates:
       name: Compile Go Executable
       command: |
         VERSION="${CIRCLE_TAG:-ci-${CIRCLE_BUILD_NUM}}"
-        echo go build -ldflags "-X main.version=${VERSION}" -o dist/${PLATFORM:-${GOOS}-${GOARCH}}/skupper-cli${EXESUFFIX} ./cmd/skupper
-        go build -ldflags "-X main.version=${VERSION}" -o dist/${PLATFORM:-${GOOS}-${GOARCH}}/skupper-cli${EXESUFFIX} ./cmd/skupper
+        echo go build -ldflags "-X main.version=${VERSION}" -o dist/${PLATFORM:-${GOOS}-${GOARCH}}/skupper${EXESUFFIX} ./cmd/skupper
+        go build -ldflags "-X main.version=${VERSION}" -o dist/${PLATFORM:-${GOOS}-${GOARCH}}/skupper${EXESUFFIX} ./cmd/skupper
   store_dist: &store_dist
     persist_to_workspace:
       root: .
