@@ -5,14 +5,14 @@ yaml-templates:
       branches:
         only: /.*/
       tags:
-        only: /v.*/
+        only: /[0-9].*/
 
   release_filters: &release_filters
     filters:
       branches:
         ignore: /.*/
       tags:
-        only: /v.*/
+        only: /[0-9].*/
 
   restore_go_cache: &restore_go_cache
     restore_cache:
