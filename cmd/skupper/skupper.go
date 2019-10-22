@@ -199,6 +199,7 @@ type Connector struct {
 	Host string
 	Port string
 	Role ConnectorRole
+	Cost int
 }
 
 func connectorConfig(connector *Connector) string {
@@ -216,6 +217,7 @@ connector {
     host: {{.Host}}
     port: {{.Port}}
     role: {{.Role}}
+    cost: {{.Cost}}
     sslProfile: {{.Name}}-profile
 }
 
@@ -1294,7 +1296,7 @@ func disconnect(name string, kube *KubeDetails) {
 	}
 }
 
-func connect(secretFile string, connectorName string, kube *KubeDetails) {
+func connect(secretFile string, connectorName string, cost int, kube *KubeDetails) {
 	yaml, err := ioutil.ReadFile(secretFile)
         if err != nil {
 		fmt.Printf("Could not read connection token: %s", err)
@@ -1329,6 +1331,7 @@ func connect(secretFile string, connectorName string, kube *KubeDetails) {
 			//read annotations to get the host and port to connect to
 			connector := Connector{
 				Name: connectorName,
+				Cost: cost,
 			}
 			if mode == RouterModeInterior {
 				connector.Host = secret.ObjectMeta.Annotations["inter-router-host"]
@@ -1674,15 +1677,17 @@ func main() {
 	cmdConnectionToken.Flags().StringVarP(&clientIdentity, "client-identity", "i", "skupper", "Provide a specific identity as which connecting skupper installation will be authenticated")
 
 	var connectionName string
+	var cost int
 	var cmdConnect = &cobra.Command{
 		Use:   "connect <connection-token-file>",
 		Short: "Connect this skupper installation to that which issued the specified connectionToken",
 		Args: requiredArg("connection-token"),
 		Run: func(cmd *cobra.Command, args []string) {
-			connect(args[0], connectionName, initKubeConfig(namespace, context))
+			connect(args[0], connectionName, cost, initKubeConfig(namespace, context))
 		},
 	}
 	cmdConnect.Flags().StringVarP(&connectionName, "connection-name", "", "", "Provide a specific name for the connection (used when removing it with disconnect)")
+	cmdConnect.Flags().IntVarP(&cost, "cost", "", 1, "Specify a cost for this connection.")
 
 	var cmdDisconnect = &cobra.Command{
 		Use:   "disconnect <name>",
