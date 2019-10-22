@@ -42,6 +42,15 @@ type ConnectedSites struct {
 	Total    int
 }
 
+type Connection struct {
+	Container  string  `json:"container"`
+	OperStatus string  `json:"operStatus"`
+	Host       string  `json:"host"`
+	Role       string  `json:"role"`
+	Active     bool    `json:"active"`
+	Dir        string  `json:"dir"`
+}
+
 func GetConnectedSites(namespace string, clientset *kubernetes.Clientset, config *restclient.Config) (ConnectedSites, error) {
 	result := ConnectedSites{}
 	nodes, err := GetNodes(namespace, clientset, config)
@@ -59,18 +68,64 @@ func GetConnectedSites(namespace string, clientset *kubernetes.Clientset, config
 	return result, err
 }
 
+func get_query(typename string) []string {
+	return []string{
+		"qdmanage",
+		"query",
+		"--type",
+		typename,
+	}
+}
+
 func GetNodes(namespace string, clientset *kubernetes.Clientset, config *restclient.Config) ([]RouterNode, error) {
+	command := get_query("node")
+	buffer, err := router_exec(command, namespace, clientset, config)
+	if err != nil {
+		return nil, err
+	} else {
+		results := []RouterNode{}
+		err = json.Unmarshal(buffer.Bytes(), &results)
+		if err != nil {
+			fmt.Println("Failed to parse JSON:", err, buffer.String())
+			return nil, err
+		} else {
+			return results, nil
+		}
+	}
+}
+
+func GetInterRouterConnection(host string, connections []Connection) *Connection {
+	for _, c := range connections {
+		if c.Role == "inter-router" && c.Host == host {
+			return &c
+		}
+	}
+	return nil
+}
+
+func GetConnections(namespace string, clientset *kubernetes.Clientset, config *restclient.Config) ([]Connection, error) {
+	command := get_query("connection")
+	buffer, err := router_exec(command, namespace, clientset, config)
+	if err != nil {
+		return nil, err
+	} else {
+		results := []Connection{}
+		err = json.Unmarshal(buffer.Bytes(), &results)
+		if err != nil {
+			fmt.Println("Failed to parse JSON:", err, buffer.String())
+			return nil, err
+		} else {
+			return results, nil
+		}
+	}
+}
+
+func router_exec(command []string, namespace string, clientset *kubernetes.Clientset, config *restclient.Config) (*bytes.Buffer, error) {
 	pod, err := kube.GetReadyPod(namespace, clientset, "router")
 	if err != nil {
 		return nil, err
 	}
 
-	command := []string{
-		"qdmanage",
-		"query",
-		"--type",
-		"node",
-	}
 	var stdout io.Writer
 
 	buffer := bytes.Buffer{}
@@ -108,13 +163,6 @@ func GetNodes(namespace string, clientset *kubernetes.Clientset, config *restcli
 	if err != nil {
 		return nil, err
 	} else {
-		results := []RouterNode{}
-		err = json.Unmarshal(buffer.Bytes(), &results)
-		if err != nil {
-			fmt.Println("Failed to parse JSON:", err, buffer.String())
-			return nil, err
-		} else {
-			return results, nil
-		}
+		return &buffer, nil
 	}
 }

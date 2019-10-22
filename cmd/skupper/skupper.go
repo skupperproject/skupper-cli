@@ -1140,6 +1140,52 @@ func deleteSkupper(kube *KubeDetails) {
 	}
 }
 
+func check_connection(name string, kube *KubeDetails) bool {
+	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			fmt.Println("skupper not enabled for", kube.Namespace)
+		} else {
+			fmt.Println(err)
+		}
+		return false
+	}
+	mode := get_router_mode(current)
+	var connectors []Connector
+	if name == "all" {
+		connectors = list_connectors(mode, kube)
+	} else {
+		connector, err := get_connector(name, mode, kube)
+		if err == nil {
+			connectors = append(connectors, connector)
+		} else {
+			fmt.Printf("Could not find connector %s: %s", name, err)
+			fmt.Println()
+			return false
+		}
+	}
+	connections, err := router.GetConnections(kube.Namespace, kube.Standard, kube.RestConfig)
+	if err == nil {
+		result := true
+		for _, connector := range connectors {
+			connection := router.GetInterRouterConnection(connector.Host + ":" + connector.Port, connections)
+			if connection == nil || !connection.Active {
+				fmt.Printf("Connection for %s not active", connector.Name)
+				fmt.Println()
+				result = false
+			} else {
+				fmt.Printf("Connection for %s is active", connector.Name)
+				fmt.Println()
+			}
+		}
+		return result
+	} else {
+		fmt.Printf("Could not check connections: %s", err)
+		fmt.Println()
+		return false
+	}
+}
+
 func list_connectors(mode RouterMode, kube *KubeDetails) []Connector {
 	var connectors []Connector
 	secrets, err := kube.Standard.CoreV1().Secrets(kube.Namespace).List(metav1.ListOptions{LabelSelector:"skupper.io/type=connection-token",})
@@ -1168,6 +1214,34 @@ func list_connectors(mode RouterMode, kube *KubeDetails) []Connector {
 		log.Fatal("Could not retrieve connection-token secrets:", err)
 	}
 	return connectors
+}
+
+func get_connector(name string, mode RouterMode, kube *KubeDetails) (Connector, error) {
+	s, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get(name, metav1.GetOptions{})
+	if err == nil {
+		var role ConnectorRole
+		var hostKey string
+		var portKey string
+		if mode == RouterModeEdge {
+			role = ConnectorRoleEdge
+			hostKey = "edge-host"
+			portKey = "edge-port"
+		} else {
+			role = ConnectorRoleInterRouter
+			hostKey = "inter-router-host"
+			portKey = "inter-router-port"
+		}
+		connector := Connector{
+			Name: s.ObjectMeta.Name,
+			Host: s.ObjectMeta.Annotations[hostKey],
+			Port: s.ObjectMeta.Annotations[portKey],
+			Role: role,
+		}
+		return connector, nil
+	} else {
+		log.Fatal("Could not retrieve connection-token secret:", name, err)
+		return Connector{}, err
+	}
 }
 
 func generate_connector_name(kube *KubeDetails) string {
@@ -1698,6 +1772,17 @@ func main() {
 		},
 	}
 
+	var cmdCheckConnection = &cobra.Command{
+		Use:   "check-connection all|<connection-name>",
+		Short: "Check whether a connection to another skupper site is active",
+		Args: requiredArg("connection name"),
+		Run: func(cmd *cobra.Command, args []string) {
+			if !check_connection(args[0], initKubeConfig(namespace, context)) {
+				os.Exit(-1)
+			}
+		},
+	}
+
 	var listConnectors bool
 	var cmdStatus = &cobra.Command{
 		Use:   "status",
@@ -1725,7 +1810,7 @@ func main() {
 
 	var rootCmd = &cobra.Command{Use: "skupper"}
 	rootCmd.Version = version
-	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdStatus, cmdVersion)
+	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdCheckConnection, cmdStatus, cmdVersion)
 	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "kubeconfig context to use")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "kubernetes namespace to use")
 	rootCmd.Execute()
