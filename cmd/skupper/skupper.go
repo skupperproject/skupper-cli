@@ -1772,16 +1772,23 @@ func main() {
 		},
 	}
 
+	var waitFor int
 	var cmdCheckConnection = &cobra.Command{
 		Use:   "check-connection all|<connection-name>",
 		Short: "Check whether a connection to another skupper site is active",
 		Args: requiredArg("connection name"),
 		Run: func(cmd *cobra.Command, args []string) {
-			if !check_connection(args[0], initKubeConfig(namespace, context)) {
+			result := check_connection(args[0], initKubeConfig(namespace, context))
+			for i := 0; !result && i < waitFor; i++ {
+				time.Sleep(time.Second)
+				result = check_connection(args[0], initKubeConfig(namespace, context))
+			}
+			if !result {
 				os.Exit(-1)
 			}
 		},
 	}
+	cmdCheckConnection.Flags().IntVar(&waitFor, "wait", 0, "Number of seconds to wait for connection(s) to become active")
 
 	var listConnectors bool
 	var cmdStatus = &cobra.Command{
