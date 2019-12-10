@@ -65,7 +65,12 @@ func GetReadyPod(namespace string, clientset *kubernetes.Clientset, component st
 func GetImageVersion(pod *corev1.Pod, container string) string {
 	for _, c := range pod.Status.ContainerStatuses {
 		if c.Name == container {
-			return fmt.Sprintf("%s (%s)", c.Image, strings.Split(c.ImageID, "@")[1][:19])
+			parts := strings.Split(c.ImageID, "@")
+			if len(parts) > 1 && len(parts[1]) >= 19 {
+				return fmt.Sprintf("%s (%s)", c.Image, parts[1][:19])
+			} else {
+				return fmt.Sprintf("%s", c.Image)
+			}
 		}
 	}
 	return "not-found"
