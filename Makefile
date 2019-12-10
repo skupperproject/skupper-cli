@@ -16,16 +16,16 @@ package: release/windows.zip release/darwin.zip release/linux.tgz
 release/linux.tgz: release/linux/skupper
 	tar -czf release/linux.tgz -C release/linux/ skupper
 
-release/linux/skupper: cmd/skupper.go
+release/linux/skupper: cmd/skupper/skupper.go
 	GOOS=linux GOARCH=amd64 go build -ldflags="-X main.version=${VERSION}" -o release/linux/skupper cmd/skupper/skupper.go
 
-release/windows/skupper: cmd/skupper.go
+release/windows/skupper: cmd/skupper/skupper.go
 	GOOS=windows GOARCH=amd64 go build -ldflags="-X main.version=${VERSION}" -o release/windows/skupper cmd/skupper/skupper.go
 
 release/windows.zip: release/windows/skupper
 	zip -j release/windows.zip release/windows/skupper
 
-release/darwin/skupper: cmd/skupper.go
+release/darwin/skupper: cmd/skupper/skupper.go
 	GOOS=darwin GOARCH=amd64 go build -ldflags="-X main.version=${VERSION}" -o release/darwin/skupper cmd/skupper/skupper.go
 
 release/darwin.zip: release/darwin/skupper
