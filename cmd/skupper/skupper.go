@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	jsonencoding "encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -636,17 +637,27 @@ func ensureProxyController(enableServiceSync bool, router *appsv1.Deployment, ku
 		labels := getLabels("proxy-controller")
 
 		var image string
-		if os.Getenv("SKUPPER_PROXY_CONTROLLER_IMAGE") != "" {
-			image = os.Getenv("SKUPPER_PROXY_CONTROLLER_IMAGE")
+		if os.Getenv("SKUPPER_CONTROLLER_IMAGE") != "" {
+			image = os.Getenv("SKUPPER_CONTROLLER_IMAGE")
 		} else {
-			image = "quay.io/skupper/proxy-controller"
+			image = "quay.io/skupper/controller"
+		}
+		var proxyImage string
+		if os.Getenv("SKUPPER_PROXY_IMAGE") != "" {
+			proxyImage = os.Getenv("SKUPPER_PROXY_IMAGE")
+		} else {
+			proxyImage = "quay.io/skupper/proxy"
 		}
 		container := corev1.Container{
 			Image: image,
 			Name:  "proxy-controller",
 			Env:   	[]corev1.EnvVar{
 				{
-					Name: "ICPROXY_SERVICE_ACCOUNT",
+					Name: "SKUPPER_PROXY_IMAGE",
+					Value: proxyImage,
+				},
+				{
+					Name: "SKUPPER_SERVICE_ACCOUNT",
 					Value: "skupper",
 				},
 				{
@@ -952,12 +963,12 @@ func ensureEditRole(router *appsv1.Deployment, kube *KubeDetails) *rbacv1.Role {
 			{
 				Verbs:     []string{"get", "list", "watch", "create", "update", "delete"},
 				APIGroups: []string{""},
-				Resources: []string{"services"},
+				Resources: []string{"services", "configmaps"},
 			},
 			{
 				Verbs:     []string{"get", "list", "watch", "create", "update", "delete"},
 				APIGroups: []string{"apps"},
-				Resources: []string{"deployments"},
+				Resources: []string{"deployments", "statefulsets"},
 			},
 		},
 	}
@@ -1599,6 +1610,392 @@ func requiredArg(name string) func(*cobra.Command,[]string) error {
 	}
 }
 
+func exposeTarget() func(*cobra.Command,[]string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 {
+			return fmt.Errorf("expose target must be specified (e.g. 'skupper expose deployment <name>'")
+		}
+		if len(args) > 2 {
+			return fmt.Errorf("illegal argument: %s", args[2])
+		}
+		if args[0] != "deployment" && args[0] != "statefulset" && args[0] != "pods" {
+			return fmt.Errorf("expose target type must be one of 'deployment', 'statefulset' or 'pods'")
+		}
+		return nil
+	}
+}
+
+type ExposeOptions struct {
+	Protocol       string
+	Address        string
+	Port           int
+	TargetPort     int
+	Headless       bool
+}
+
+type Service struct {
+	Name           string `json:"name"`
+	Address        string `json:"address"`
+	Protocol       string `json:"protocol"`
+	Port           int    `json:"port"`
+	Headless       *Headless `json:"headless,omitempty"`
+	Targets        []ServiceTarget `json:"targets,omitempty"`
+}
+
+type ServiceTarget struct {
+	Name           string `json:"name,omitempty"`
+	Selector       string `json:"selector"`
+	TargetPort     int    `json:"targetPort,omitempty"`
+}
+
+type Headless struct {
+	Name           string `json:"name"`
+	Size           int    `json:"size"`
+	TargetPort     int    `json:"targetPort,omitempty"`
+}
+
+func updateServiceDefinition(serviceName string, targetName string, selector string, port int, options ExposeOptions, owner *metav1.OwnerReference, kube *KubeDetails) {
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	if err == nil  {
+		//is the service already defined?
+		serviceTarget := ServiceTarget {
+			Selector: selector,
+		}
+		if targetName != "" {
+			serviceTarget.Name = targetName
+		}
+		jsonDef := current.Data[serviceName]
+		if jsonDef == "" {
+			fmt.Printf("New entry for service %s", serviceName)
+			fmt.Println()
+			serviceDef := Service{
+				Name: serviceName,
+				Protocol: options.Protocol,
+				Port: port,
+				Targets: []ServiceTarget {
+					serviceTarget,
+				},
+			}
+			encoded, err := jsonencoding.Marshal(serviceDef)
+			if err != nil {
+				fmt.Printf("Failed to create json for service definition: %s", err)
+				fmt.Println()
+				return
+			} else {
+				current.Data[serviceName] = string(encoded)
+			}
+		} else {
+			service := Service {}
+			err = jsonencoding.Unmarshal([]byte(jsonDef), &service)
+			if err != nil {
+				fmt.Printf("Failed to read json for service definition %s: %s", serviceName, err)
+				fmt.Println()
+				return
+			} else if service.Headless != nil {
+				fmt.Printf("Service %s already defined as headless. To allow target use skupper unexpose.", serviceName)
+				fmt.Println()
+				return
+			} else {
+				if options.TargetPort != 0 {
+					serviceTarget.TargetPort = options.TargetPort
+				} else if port != service.Port {
+					serviceTarget.TargetPort = port
+				}
+				modified := false
+				targets := []ServiceTarget{}
+				for _, t := range service.Targets {
+					if t.Name == serviceTarget.Name {
+						modified = true
+						targets =append(targets, serviceTarget)
+						fmt.Printf("Updated target %s for service %s", serviceTarget.Name, serviceName)
+						fmt.Println()
+					} else {
+						targets =append(targets, t)
+					}
+				}
+				if !modified {
+					targets = append(targets, serviceTarget)
+					fmt.Printf("Added new target %s for service %s", serviceTarget.Name, serviceName)
+					fmt.Println()
+				}
+				service.Targets = targets
+				encoded, err := jsonencoding.Marshal(service)
+				if err != nil {
+					fmt.Printf("Failed to create json for service definition: %s", err)
+					fmt.Println()
+					return
+				} else {
+					current.Data[serviceName] = string(encoded)
+				}
+			}
+		}
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+		if err != nil {
+			log.Fatal("Failed to update skupper-services config map: ", err.Error())
+		}
+	} else if errors.IsNotFound(err) {
+		serviceTarget := ServiceTarget {
+			Selector: selector,
+		}
+		serviceDef := Service{
+			Name: serviceName,
+			Protocol: options.Protocol,
+			Port: port,
+			Targets: []ServiceTarget {
+				serviceTarget,
+			},
+		}
+		jsonDef, err := jsonencoding.Marshal(serviceDef)
+		//need to create the configmap
+		configMap := corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "v1",
+				Kind:       "ConfigMap",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "skupper-services",
+			},
+			Data: map[string]string{
+				serviceName: string(jsonDef),
+			},
+		}
+
+		if owner != nil {
+			configMap.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+				*owner,
+			}
+		}
+
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(&configMap)
+		if err != nil {
+			log.Fatal("Failed to create skupper-services config map: ", err.Error())
+		}
+	} else {
+		fmt.Println("Could not retrieve service definitions from configmap 'skupper-services'", err)
+	}
+
+}
+
+func updateHeadlessServiceDefinition(serviceName string, headless Headless, port int, options ExposeOptions, owner *metav1.OwnerReference, kube *KubeDetails) {
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	if err == nil  {
+		//is the service already defined?
+		jsonDef := current.Data[serviceName]
+		if jsonDef == "" {
+			fmt.Printf("New entry for headless service %s", serviceName)
+			fmt.Println()
+			serviceDef := Service {
+				Name: serviceName,
+				Protocol: options.Protocol,
+				Port: port,
+				Headless: &headless,
+			}
+			encoded, err := jsonencoding.Marshal(serviceDef)
+			if err != nil {
+				fmt.Printf("Failed to create json for service definition: %s", err)
+				fmt.Println()
+				return
+			} else {
+				current.Data[serviceName] = string(encoded)
+			}
+		} else {
+			service := Service {}
+			err = jsonencoding.Unmarshal([]byte(jsonDef), &service)
+			if err != nil {
+				fmt.Printf("Failed to read json for service definition %s: %s", serviceName, err)
+				fmt.Println()
+				return
+			} else {
+				if len(service.Targets) > 0 {
+					fmt.Printf("Non-headless service definition already exists for %s; unexpose first", serviceName)
+					fmt.Println()
+					return
+				}
+				service.Name = serviceName
+				service.Protocol = options.Protocol
+				service.Port = port
+				service.Headless = &headless
+
+				encoded, err := jsonencoding.Marshal(service)
+				if err != nil {
+					fmt.Printf("Failed to create json for service definition: %s", err)
+					fmt.Println()
+					return
+				} else {
+					current.Data[serviceName] = string(encoded)
+				}
+			}
+		}
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+		if err != nil {
+			log.Fatal("Failed to update skupper-services config map: ", err.Error())
+		}
+	} else if errors.IsNotFound(err) {
+		serviceDef := Service{
+			Name: serviceName,
+			Protocol: options.Protocol,
+			Port: port,
+			Headless: &headless,
+		}
+		jsonDef, err := jsonencoding.Marshal(serviceDef)
+		//need to create the configmap
+		configMap := corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "v1",
+				Kind:       "ConfigMap",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "skupper-services",
+			},
+			Data: map[string]string{
+				serviceName: string(jsonDef),
+			},
+		}
+
+		if owner != nil {
+			configMap.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+				*owner,
+			}
+		}
+
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(&configMap)
+		if err != nil {
+			log.Fatal("Failed to create skupper-services config map: ", err.Error())
+		}
+	} else {
+		fmt.Println("Could not retrieve service definitions from configmap 'skupper-services'", err)
+	}
+
+}
+
+func stringifySelector(labels map[string]string) string {
+	result := ""
+	for k, v := range labels {
+		if result != "" {
+			result += "&"
+		}
+		result += k
+		result += "="
+		result += v
+	}
+	return result
+}
+
+func expose(targetType string, targetName string, options ExposeOptions, kube *KubeDetails) {
+	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			fmt.Println("skupper not enabled for", kube.Namespace)
+		} else {
+			fmt.Println(err)
+		}
+	} else if options.Headless && targetType != "statefulset" {
+		fmt.Println("The headless option is only supported for statefulsets")
+	} else {
+		owner := get_owner_reference(router)
+		if targetType == "deployment" {
+			target, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(targetName, metav1.GetOptions{})
+			if err == nil  {
+				//TODO: handle case where there is more than one container (need --container option?)
+				var port int
+				if options.Port == 0 && options.TargetPort == 0 && target.Spec.Template.Spec.Containers[0].Ports != nil {
+					port = int(target.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort)
+				}
+				selector := stringifySelector(target.Spec.Selector.MatchLabels)
+				if options.Address == "" {
+					updateServiceDefinition(target.ObjectMeta.Name, "", selector, port, options, &owner, kube)
+				} else {
+					updateServiceDefinition(options.Address, target.ObjectMeta.Name, selector, port, options, &owner, kube)
+				}
+			} else {
+				fmt.Printf("Could not read deployment %s: %s", targetName, err)
+				fmt.Println()
+			}
+		} else if targetType == "statefulset" {
+			if options.Headless {
+				statefulset, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(targetName, metav1.GetOptions{})
+				if err == nil  {
+					if options.Address != "" && options.Address != statefulset.Spec.ServiceName {
+						fmt.Printf("Cannot specify different address from service name for headless service.")
+						fmt.Println()
+					}
+					service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get(statefulset.Spec.ServiceName, metav1.GetOptions{})
+					if err == nil  {
+						var port int
+						var headless Headless
+						if options.Port != 0 {
+							port = options.Port
+						} else if len(service.Spec.Ports) == 1 {
+							port = int(service.Spec.Ports[0].Port)
+							if service.Spec.Ports[0].TargetPort.IntValue() != 0 && int(service.Spec.Ports[0].Port) != service.Spec.Ports[0].TargetPort.IntValue() {
+								//TODO: handle string ports
+								headless.TargetPort = service.Spec.Ports[0].TargetPort.IntValue()
+							}
+						} else {
+							fmt.Printf("Service %s has multiple ports, specify which to use with --port", statefulset.Spec.ServiceName)
+							fmt.Println()
+						}
+						if port > 0 {
+							headless.Name = statefulset.ObjectMeta.Name
+							headless.Size = int(*statefulset.Spec.Replicas)
+							updateHeadlessServiceDefinition(service.ObjectMeta.Name, headless, port, options, &owner, kube)
+						}
+					} else if errors.IsNotFound(err) {
+						fmt.Printf("Service %s not found for statefulset %s", statefulset.Spec.ServiceName, targetName)
+						fmt.Println()
+					} else {
+						fmt.Printf("Could not read service %s: %s", statefulset.Spec.ServiceName, err)
+						fmt.Println()
+					}
+				} else if errors.IsNotFound(err) {
+					fmt.Printf("StatefulSet %s not found", targetName)
+					fmt.Println()
+				} else {
+					fmt.Printf("Could not read StatefulSet %s: %s", targetName, err)
+					fmt.Println()
+				}
+			} else {
+				fmt.Println("Non-headless support for statefulset not yet implemented")
+			}
+		} else if targetType == "pods" {
+			fmt.Println("Not yet implemented")
+		} else {
+			fmt.Println("Unsupported target type", targetType)
+		}
+	}
+}
+
+func listServiceDefinitions(kube *KubeDetails) {
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	if err == nil  {
+		fmt.Println()
+		fmt.Println("services exposed through skupper:")
+		for k, v := range current.Data {
+			service := Service {}
+			err = jsonencoding.Unmarshal([]byte(v), &service)
+			if err != nil {
+				fmt.Printf("Failed to parse json for service definition %s: %s", k, err)
+				fmt.Println()
+			} else {
+				fmt.Printf("    %s (%s port %d) with targets", service.Name, service.Protocol, service.Port)
+				fmt.Println()
+				for _, t := range service.Targets {
+					var name string
+					if t.Name != "" {
+						name = fmt.Sprintf("name=%s", t.Name)
+					}
+					fmt.Printf("      => %s %s", t.Selector, name)
+					fmt.Println()
+				}
+			}
+		}
+	} else if errors.IsNotFound(err) {
+		fmt.Println("No services defined")
+	} else {
+		fmt.Println("Could not retrieve service definitions from configmao 'skupper-services'", err)
+	}
+}
+
 type KubeDetails struct {
 	Namespace string
 	Standard *kubernetes.Clientset
@@ -1791,15 +2188,35 @@ func main() {
 	cmdCheckConnection.Flags().IntVar(&waitFor, "wait", 0, "Number of seconds to wait for connection(s) to become active")
 
 	var listConnectors bool
+	var listServiceDefs bool
 	var cmdStatus = &cobra.Command{
 		Use:   "status",
 		Short: "Report status of skupper installation",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			status(initKubeConfig(namespace, context), listConnectors)
+			if listServiceDefs {
+				listServiceDefinitions(initKubeConfig(namespace, context))
+			}
 		},
 	}
-	cmdStatus.Flags().BoolVarP(&listConnectors, "list-connectors", "", false, "List configured outgoing connections")
+	cmdStatus.Flags().BoolVar(&listConnectors, "list-connectors", false, "List configured outgoing connections")
+	cmdStatus.Flags().BoolVar(&listServiceDefs, "list-service-definitions", false, "List skupper service definitions")
+
+	exposeOptions := ExposeOptions{}
+	var cmdExpose = &cobra.Command{
+		Use:   "expose [deployment <name>|service <name>|pods <selector>|headless <servicename>.<statefulsetname>]",
+		Short: "Expose a set of pods via a skupper address",
+		Args: exposeTarget(),
+		Run: func(cmd *cobra.Command, args []string) {
+			expose(args[0], args[1], exposeOptions, initKubeConfig(namespace, context))
+		},
+	}
+	cmdExpose.Flags().StringVar(&(exposeOptions.Protocol), "protocol", "tcp", "Protocol to proxy (tcp, http or http2)")
+	cmdExpose.Flags().StringVar(&(exposeOptions.Address), "address", "", "Skupper address to expose as")
+	cmdExpose.Flags().IntVar(&(exposeOptions.Port), "port", 0, "Port to expose on")
+	cmdExpose.Flags().IntVar(&(exposeOptions.TargetPort), "target-port", 0, "Port to target on pods")
+	cmdExpose.Flags().BoolVar(&(exposeOptions.Headless), "headless", false, "Expose through headless service (valid only for statefulset target)")
 
 	var cmdVersion = &cobra.Command{
 		Use:   "version",
@@ -1817,7 +2234,7 @@ func main() {
 
 	var rootCmd = &cobra.Command{Use: "skupper"}
 	rootCmd.Version = version
-	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdCheckConnection, cmdStatus, cmdVersion)
+	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdCheckConnection, cmdStatus, cmdExpose, cmdVersion)
 	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "kubeconfig context to use")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "kubernetes namespace to use")
 	rootCmd.Execute()
