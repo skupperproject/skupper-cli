@@ -1889,7 +1889,7 @@ func stringifySelector(labels map[string]string) string {
 	result := ""
 	for k, v := range labels {
 		if result != "" {
-			result += "&"
+			result += ","
 		}
 		result += k
 		result += "="
