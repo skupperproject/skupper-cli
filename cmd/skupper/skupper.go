@@ -1145,7 +1145,7 @@ func deleteSkupper(kube *KubeDetails) {
 	if err == nil  {
 		fmt.Println("Skupper is now removed from '" + kube.Namespace + "'.")
 	} else if errors.IsNotFound(err) {
-		fmt.Println("Skupper not installed in '" + kube.Namespace + "'.")
+		fmt.Println("Skupper is not installed in '" + kube.Namespace + "'.")
 	} else {
 		fmt.Println("Error while trying to delete:", err.Error())
 	}
@@ -1155,7 +1155,7 @@ func check_connection(name string, kube *KubeDetails) bool {
 	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			fmt.Println("skupper not enabled for", kube.Namespace)
+			fmt.Println("Skupper is not installed in '" + kube.Namespace + "'.  Use 'skupper init' to install.")
 		} else {
 			fmt.Println(err)
 		}
@@ -1242,7 +1242,7 @@ func listConnectors(kube *KubeDetails) {
 			}
 		}
 	} else if errors.IsNotFound(err) {
-		fmt.Println("skupper not enabled for", kube.Namespace)
+		fmt.Println("Skupper not installed in '" + kube.Namespace + "'")
 	} else {
 		log.Fatal(err)
 	}
@@ -1314,7 +1314,7 @@ func status(kube *KubeDetails) {
 			modedesc = " in edge mode"
 		}
 		if current.Status.ReadyReplicas == 0 {
-			fmt.Printf("Skupper enabled for namespace %q%s. Status pending...", kube.Namespace, modedesc)
+			fmt.Printf("Skupper is installed in namespace '%q%s'. Status pending...", kube.Namespace, modedesc)
 		} else {
 			connected, err := router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
 			for i :=0; i < 5 && err != nil; i++ {
@@ -1322,9 +1322,10 @@ func status(kube *KubeDetails) {
 				connected, err = router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
 			}
 			if err != nil {
-				log.Fatalf("Skupper enabled for namespace %s. Unable to determine connectivity:%s\n", kube.Namespace, err)
+				log.Fatalf("Skupper is enabled for namespace '%s'. Unable to determine connectivity:%s\n", kube.Namespace, err)
 			} else {
-				fmt.Printf("Skupper enabled for namespace %q%s.", kube.Namespace, modedesc)
+				fmt.Printf("Skupper is enabled for namespace '%q%s'.", kube.Namespace, modedesc)
+                                // Consider newlines between these sentences
 				if connected.Total == 0 {
 					fmt.Printf(" It is not connected to any other sites.")
 				} else if connected.Total == 1 {
@@ -1447,11 +1448,11 @@ func connect(secretFile string, connectorName string, cost int, kube *KubeDetail
 			if err != nil {
 				fmt.Println("Failed to update router deployment: ", err.Error())
 			} else {
-				fmt.Printf("Skupper configured to connect to %s:%s (name=%s)", connector.Host, connector.Port, connector.Name)
+				fmt.Printf("Skupper is now configured to connect to %s:%s (name=%s)", connector.Host, connector.Port, connector.Name)
 				fmt.Println()
 			}
 		} else if errors.IsAlreadyExists(err) {
-			fmt.Println("A connector secret of that name already exist, please choose a different name")
+			fmt.Println("A connector secret of that name already exist. Please choose a different name.")
 		} else {
 			fmt.Println("Failed to create connector secret: ", err.Error())
 		}
@@ -1683,7 +1684,8 @@ func updateServiceDefinition(serviceName string, targetName string, selector str
 		}
 		jsonDef := current.Data[serviceName]
 		if jsonDef == "" {
-			fmt.Printf("New entry for service %s", serviceName)
+                        // "entry" seems a bit vague to me here
+			fmt.Printf("Created new entry for service %s", serviceName)
 			fmt.Println()
 			serviceDef := Service{
 				Address: serviceName,
@@ -1902,7 +1904,7 @@ func expose(targetType string, targetName string, options ExposeOptions, kube *K
 	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			fmt.Println("skupper not enabled for", kube.Namespace)
+			fmt.Println("Skupper is not enabled for '" + kube.Namespace + "'")
 		} else {
 			fmt.Println(err)
 		}
@@ -2095,7 +2097,7 @@ func unexpose(targetType string, targetName string, address string, kube *KubeDe
 func listServiceDefinitions(kube *KubeDetails) {
 	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
 	if err == nil  {
-		fmt.Println("services exposed through skupper:")
+		fmt.Println("Services exposed through Skupper:")
 		for k, v := range current.Data {
 			service := Service {}
 			err = jsonencoding.Unmarshal([]byte(v), &service)
@@ -2216,8 +2218,8 @@ func main() {
 	var clusterLocal bool
 	var cmdInit = &cobra.Command{
 		Use:   "init",
-		Short: "Initialise skupper installation",
-		Long: `init will setup a router and other supporting objects to provide a functional skupper installation that can then be connected to other skupper installations`,
+		Short: "Initialise a Skupper site",
+		Long: `init sets up a router and other supporting objects to provide a functional Skupper installation that can then be connected to other Skupper sites`,
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			router := Router{
@@ -2267,6 +2269,7 @@ func main() {
 			fmt.Println("Skupper is now installed in namespace '" + kube.Namespace + "'.  Use 'skupper status' to get more information.")
 		},
 	}
+        // Recommend --site-name - I find just a naked "id" or "name" too context free and unhelpful
 	cmdInit.Flags().StringVarP(&skupperName, "id", "", "", "Provide a specific identity for the skupper installation")
 	cmdInit.Flags().BoolVarP(&isEdge, "edge", "", false, "Configure as an edge")
 	cmdInit.Flags().BoolVarP(&enableProxyController, "enable-proxy-controller", "", true, "Setup the proxy controller as well as the router")
@@ -2291,7 +2294,7 @@ func main() {
 	var clientIdentity string
 	var cmdConnectionToken = &cobra.Command{
 		Use:   "connection-token <output-file>",
-		Short: "Create a connection token file with which another skupper installation can connect to this one",
+		Short: "Create a connection token.  The 'connect' command uses the token to establish a connection from a remote Skupper site.",
 		Args: requiredArg("output-file"),
 		Run: func(cmd *cobra.Command, args []string) {
 			generateConnectSecret(clientIdentity, args[0], initKubeConfig(namespace, context))
@@ -2303,18 +2306,18 @@ func main() {
 	var cost int
 	var cmdConnect = &cobra.Command{
 		Use:   "connect <connection-token-file>",
-		Short: "Connect this skupper installation to that which issued the specified connectionToken",
+		Short: "Connect the current Skupper site to a remote Skupper site",
 		Args: requiredArg("connection-token"),
 		Run: func(cmd *cobra.Command, args []string) {
 			connect(args[0], connectionName, cost, initKubeConfig(namespace, context))
 		},
 	}
-	cmdConnect.Flags().StringVarP(&connectionName, "connection-name", "", "", "Provide a specific name for the connection (used when removing it with disconnect)")
+	cmdConnect.Flags().StringVarP(&connectionName, "connection-name", "", "", "Provide a specific name for the connection. The name is used when removing a connection with disconnect.")
 	cmdConnect.Flags().IntVarP(&cost, "cost", "", 1, "Specify a cost for this connection.")
 
 	var cmdDisconnect = &cobra.Command{
 		Use:   "disconnect <name>",
-		Short: "Remove specified connection",
+		Short: "Remove the specified connection",
 		Args: requiredArg("connection name"),
 		Run: func(cmd *cobra.Command, args []string) {
 			disconnect(args[0], initKubeConfig(namespace, context))
@@ -2324,7 +2327,7 @@ func main() {
 	var waitFor int
 	var cmdCheckConnection = &cobra.Command{
 		Use:   "check-connection all|<connection-name>",
-		Short: "Check whether a connection to another skupper site is active",
+		Short: "Check whether a connection to another Skupper site is active",
 		Args: requiredArg("connection name"),
 		Run: func(cmd *cobra.Command, args []string) {
 			result := check_connection(args[0], initKubeConfig(namespace, context))
@@ -2337,11 +2340,11 @@ func main() {
 			}
 		},
 	}
-	cmdCheckConnection.Flags().IntVar(&waitFor, "wait", 0, "Number of seconds to wait for connection(s) to become active")
+	cmdCheckConnection.Flags().IntVar(&waitFor, "wait", 0, "The number of seconds to wait for connections to become active")
 
 	var cmdStatus = &cobra.Command{
 		Use:   "status",
-		Short: "Report status of skupper installation",
+		Short: "Report the status of the current Skupper site",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			status(initKubeConfig(namespace, context))
@@ -2360,23 +2363,23 @@ func main() {
 	exposeOptions := ExposeOptions{}
 	var cmdExpose = &cobra.Command{
 		Use:   "expose [deployment <name>|pods <selector>|statefulset <statefulsetname>]",
-		Short: "Expose a set of pods via a skupper address",
+		Short: "Expose a set of pods through a Skupper address",
 		Args: exposeTarget(),
 		Run: func(cmd *cobra.Command, args []string) {
 			expose(args[0], args[1], exposeOptions, initKubeConfig(namespace, context))
 		},
 	}
-	cmdExpose.Flags().StringVar(&(exposeOptions.Protocol), "protocol", "tcp", "Protocol to proxy (tcp, http or http2)")
-	cmdExpose.Flags().StringVar(&(exposeOptions.Address), "address", "", "Skupper address to expose as")
-	cmdExpose.Flags().IntVar(&(exposeOptions.Port), "port", 0, "Port to expose on")
-	cmdExpose.Flags().IntVar(&(exposeOptions.TargetPort), "target-port", 0, "Port to target on pods")
-	cmdExpose.Flags().BoolVar(&(exposeOptions.Headless), "headless", false, "Expose through headless service (valid only for statefulset target)")
+	cmdExpose.Flags().StringVar(&(exposeOptions.Protocol), "protocol", "tcp", "The protocol to proxy (tcp, http, or http2)")
+	cmdExpose.Flags().StringVar(&(exposeOptions.Address), "address", "", "The Skupper address to expose")
+	cmdExpose.Flags().IntVar(&(exposeOptions.Port), "port", 0, "The port to expose on")
+	cmdExpose.Flags().IntVar(&(exposeOptions.TargetPort), "target-port", 0, "The port to target on pods")
+	cmdExpose.Flags().BoolVar(&(exposeOptions.Headless), "headless", false, "Expose through a headless service (valid only for a statefulset target)")
 
 
 	var unexposeAddress string
 	var cmdUnexpose = &cobra.Command{
 		Use:   "unexpose [deployment <name>|pods <selector>|statefulset <statefulsetname>]",
-		Short: "Unexpose a set of pods previously exposed via a skupper address",
+		Short: "Unexpose a set of pods previously exposed through a Skupper address",
 		Args: exposeTarget(),
 		Run: func(cmd *cobra.Command, args []string) {
 			unexpose(args[0], args[1], unexposeAddress, initKubeConfig(namespace, context))
@@ -2386,7 +2389,7 @@ func main() {
 
 	var cmdListExposed = &cobra.Command{
 		Use:   "list-exposed",
-		Short: "List services exposed over the skupper network",
+		Short: "List services exposed over the Skupper network",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			listServiceDefinitions(initKubeConfig(namespace, context))
@@ -2395,7 +2398,7 @@ func main() {
 
 	var cmdVersion = &cobra.Command{
 		Use:   "version",
-		Short: "Report version of skupper cli and services",
+		Short: "Report the version of the Skupper CLI and services",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			kubeConfig := initKubeConfig(namespace, context)
@@ -2410,7 +2413,7 @@ func main() {
 	var rootCmd = &cobra.Command{Use: "skupper"}
 	rootCmd.Version = version
 	rootCmd.AddCommand(cmdInit, cmdDelete, cmdConnectionToken, cmdConnect, cmdDisconnect, cmdCheckConnection, cmdStatus, cmdListConnectors, cmdExpose, cmdUnexpose, cmdListExposed, cmdVersion)
-	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "kubeconfig context to use")
-	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "kubernetes namespace to use")
+	rootCmd.PersistentFlags().StringVarP(&context, "context", "c", "", "The kubeconfig context to use")
+	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "The Kubernetes namespace to use")
 	rootCmd.Execute()
 }
