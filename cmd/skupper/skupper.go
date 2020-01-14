@@ -1982,7 +1982,33 @@ func expose(targetType string, targetName string, options ExposeOptions, kube *K
 					fmt.Println()
 				}
 			} else {
-				fmt.Println("Non-headless support for statefulset not yet implemented")
+				target, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(targetName, metav1.GetOptions{})
+				if err == nil  {
+					//TODO: handle case where there is more than one container (need --container option?)
+					port := options.Port
+					targetPort := options.TargetPort
+					if target.Spec.Template.Spec.Containers[0].Ports != nil {
+						if port == 0 {
+							port = int(target.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort)
+						} else if targetPort == 0 {
+							targetPort = int(target.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort)
+						}
+					}
+					if port == 0 {
+						fmt.Printf("Container in statefulset does not specify port, use --port option to provide it")
+						fmt.Println()
+					} else {
+						selector := stringifySelector(target.Spec.Selector.MatchLabels)
+						if options.Address == "" {
+							updateServiceDefinition(target.ObjectMeta.Name, "", selector, port, options, &owner, kube)
+						} else {
+							updateServiceDefinition(options.Address, target.ObjectMeta.Name, selector, port, options, &owner, kube)
+						}
+					}
+				} else {
+					fmt.Printf("Could not read statefulset %s: %s", targetName, err)
+					fmt.Println()
+				}
 			}
 		} else if targetType == "pods" {
 			fmt.Println("Not yet implemented")
@@ -2053,14 +2079,12 @@ func removeServiceTarget(serviceName string, targetName string, kube *KubeDetail
 }
 
 func unexpose(targetType string, targetName string, address string, kube *KubeDetails) {
-	if targetType == "deployment" {
+	if targetType == "deployment" || targetType == "statefulset" {
 		if address == "" {
 			removeServiceTarget(targetName, targetName, kube)
 		} else {
 			removeServiceTarget(address, targetName, kube)
 		}
-	} else if targetType == "statefulset" {
-		fmt.Println("Not yet implemented")
 	} else if targetType == "pods" {
 		fmt.Println("Not yet implemented")
 	} else {
