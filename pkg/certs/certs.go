@@ -20,14 +20,19 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
+	"io/ioutil"
 	"log"
 	"math/big"
 	"net"
+	"os"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 func publicKey(priv interface{}) interface{} {
@@ -50,9 +55,11 @@ func pemBlockForKey(priv interface{}) *pem.Block {
 
 type CertificateAuthority struct {
 	Certificate *x509.Certificate
-	Key interface{}
-	CrtData []byte
+	Key         interface{}
+	CrtData     []byte
 }
+
+type CertificateData map[string][]byte
 
 func decodeDataElement(in []byte, name string) []byte {
 	block, _ := pem.Decode(in)
@@ -73,8 +80,8 @@ func getCAFromSecret(secret *corev1.Secret) CertificateAuthority {
 	}
 	return CertificateAuthority{
 		Certificate: cert,
-		Key: key,
-		CrtData: secret.Data["tls.crt"],
+		Key:         key,
+		CrtData:     secret.Data["tls.crt"],
 	}
 }
 
@@ -85,7 +92,7 @@ func generateSecret(name string, subject string, hosts string, ca *CertificateAu
 	}
 
 	notBefore := time.Now()
-	notAfter := notBefore.Add(5*365*24*time.Hour) //TODO: make configurable?
+	notAfter := notBefore.Add(5 * 365 * 24 * time.Hour) //TODO: make configurable?
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
@@ -98,8 +105,8 @@ func generateSecret(name string, subject string, hosts string, ca *CertificateAu
 		Subject: pkix.Name{
 			CommonName: subject,
 		},
-		NotBefore: notBefore,
-		NotAfter:  notAfter,
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
@@ -115,7 +122,7 @@ func generateSecret(name string, subject string, hosts string, ca *CertificateAu
 	}
 
 	var parent *x509.Certificate
-	var cakey interface {}
+	var cakey interface{}
 	if ca == nil {
 		//self signed
 		template.IsCA = true
@@ -138,7 +145,7 @@ func generateSecret(name string, subject string, hosts string, ca *CertificateAu
 			Kind:       "Secret",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name: name,
 		},
 		Type: "kubernetes.io/tls",
 		Data: map[string][]byte{},
@@ -156,6 +163,33 @@ func generateSecret(name string, subject string, hosts string, ca *CertificateAu
 	return secret
 }
 
+func SecretToCertData(secret corev1.Secret) CertificateData {
+	certData := CertificateData{}
+	for k, v := range secret.Data {
+		certData[k] = v
+	}
+	return certData
+}
+
+func CertDataToSecret(name string, certData CertificateData, annotations map[string]string) corev1.Secret {
+	secret := corev1.Secret{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Secret",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Annotations: annotations,
+		},
+		Type: "kubernetes.io/tls",
+		Data: map[string][]byte{},
+	}
+	for k, v := range certData {
+		secret.Data[k] = v
+	}
+	return secret
+}
+
 func GenerateSecret(name string, subject string, hosts string, ca *corev1.Secret) corev1.Secret {
 	caCert := getCAFromSecret(ca)
 	return generateSecret(name, subject, hosts, &caCert)
@@ -163,4 +197,60 @@ func GenerateSecret(name string, subject string, hosts string, ca *corev1.Secret
 
 func GenerateCASecret(name string, subject string) corev1.Secret {
 	return generateSecret(name, subject, "", nil)
+}
+
+func GenerateCertificateData(name string, subject string, hosts string, caData CertificateData) CertificateData {
+	caSecret := CertDataToSecret("temp", caData, nil)
+	secret := GenerateSecret(name, subject, hosts, &caSecret)
+	return SecretToCertData(secret)
+}
+
+func GenerateCACertificateData(name string, subject string) CertificateData {
+	secret := GenerateCASecret(name, subject)
+	return SecretToCertData(secret)
+}
+
+func PutCertificateData(name string, secretFile string, certData CertificateData, annotations map[string]string) {
+	secret := CertDataToSecret(name, certData, annotations)
+
+	//generate a yaml and save it to the specified path
+	s := json.NewYAMLSerializer(json.DefaultMetaFactory, scheme.Scheme, scheme.Scheme)
+	out, err := os.Create(secretFile)
+	if err != nil {
+		log.Fatal("Could not write to file " + secretFile + ": " + err.Error())
+	}
+	err = s.Encode(&secret, out)
+	if err != nil {
+		log.Fatal("Could not write out generated secret: " + err.Error())
+	} else {
+		// TODO: valid token, local cluster? extra
+		fmt.Printf("Connection token written to %s", secretFile)
+		fmt.Println()
+	}
+}
+
+func GetSecretContent(secretFile string) map[string][]byte {
+	yaml, err := ioutil.ReadFile(secretFile)
+	if err != nil {
+		fmt.Printf("Could not read connection token: %s", err)
+		fmt.Println()
+		return nil
+	}
+	s := json.NewYAMLSerializer(json.DefaultMetaFactory, scheme.Scheme,
+		scheme.Scheme)
+	var secret corev1.Secret
+	_, _, err = s.Decode(yaml, nil, &secret)
+	if err != nil {
+		fmt.Printf("Could not parse connection token: %s", err)
+		fmt.Println()
+		return nil
+	}
+	content := make(map[string][]byte)
+	for k, v := range secret.Data {
+		content[k] = v
+	}
+	for k, v := range secret.ObjectMeta.Annotations {
+		content[k] = []byte(v)
+	}
+	return content
 }
