@@ -640,13 +640,13 @@ func ensureProxyController(enableServiceSync bool, router *appsv1.Deployment, ku
 		if os.Getenv("SKUPPER_CONTROLLER_IMAGE") != "" {
 			image = os.Getenv("SKUPPER_CONTROLLER_IMAGE")
 		} else {
-			image = "quay.io/skupper/controller:preview2"
+			image = "quay.io/skupper/controller"
 		}
 		var proxyImage string
 		if os.Getenv("SKUPPER_PROXY_IMAGE") != "" {
 			proxyImage = os.Getenv("SKUPPER_PROXY_IMAGE")
 		} else {
-			proxyImage = "quay.io/skupper/proxy:preview2"
+			proxyImage = "quay.io/skupper/proxy"
 		}
 		container := corev1.Container{
 			Image: image,
