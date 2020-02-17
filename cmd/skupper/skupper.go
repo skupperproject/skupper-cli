@@ -1679,6 +1679,9 @@ func updateServiceDefinition(serviceName string, targetName string, selector str
 		if targetName != "" {
 			serviceTarget.Name = targetName
 		}
+		if options.TargetPort != 0 {
+			serviceTarget.TargetPort = options.TargetPort
+		}
 		if current.Data == nil {
 			current.Data = make(map[string]string)
 		}
@@ -1755,6 +1758,12 @@ func updateServiceDefinition(serviceName string, targetName string, selector str
 	} else if errors.IsNotFound(err) {
 		serviceTarget := ServiceTarget {
 			Selector: selector,
+		}
+		if targetName != "" {
+			serviceTarget.Name = targetName
+		}
+		if options.TargetPort != 0 {
+			serviceTarget.TargetPort = options.TargetPort
 		}
 		serviceDef := Service{
 			Address: serviceName,
