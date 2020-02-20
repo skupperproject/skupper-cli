@@ -56,7 +56,8 @@ func getConnectedSitesFromNodes(nodes []RouterNode, direct bool, namespace strin
 	for _, n := range nodes {
 		edges, err := GetEdgeSitesForRouter(n.Id, namespace, clientset, config)
 		if err != nil {
-			fmt.Println("Failed to check edge nodes for %s:", n.Id, err)
+			fmt.Printf("Failed to check edge nodes for %s: %s", n.Id, err)
+			fmt.Println()
 		}
 		if n.NextHop == "(self)" {
 			if direct {
