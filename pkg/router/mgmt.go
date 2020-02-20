@@ -51,21 +51,77 @@ type Connection struct {
 	Dir        string  `json:"dir"`
 }
 
-func GetConnectedSites(namespace string, clientset *kubernetes.Clientset, config *restclient.Config) (ConnectedSites, error) {
+func getConnectedSitesFromNodes(nodes []RouterNode, direct bool, namespace string, clientset *kubernetes.Clientset, config *restclient.Config) ConnectedSites {
 	result := ConnectedSites{}
-	nodes, err := GetNodes(namespace, clientset, config)
-	if err == nil {
-		for _, n := range nodes {
+	for _, n := range nodes {
+		edges, err := GetEdgeSitesForRouter(n.Id, namespace, clientset, config)
+		if err != nil {
+			fmt.Println("Failed to check edge nodes for %s:", n.Id, err)
+		}
+		if n.NextHop == "(self)" {
+			if direct {
+				result.Direct += edges
+			} else {
+				result.Indirect += edges
+			}
+		} else {
+			result.Indirect += edges
 			if n.NextHop == "" {
 				result.Direct++
-				result.Total++
-			} else if n.NextHop != "(self)" {
+			} else {
 				result.Indirect++
-				result.Total++
 			}
 		}
 	}
-	return result, err
+	result.Total = result.Direct + result.Indirect
+	return result
+}
+
+func GetConnectedSites(edge bool, namespace string, clientset *kubernetes.Clientset, config *restclient.Config) (ConnectedSites, error) {
+	result := ConnectedSites{}
+	if edge {
+		uplink, err := getEdgeUplink(namespace, clientset, config)
+		if err == nil {
+			if uplink == nil {
+				return result, nil
+			} else {
+				nodes, err := getNodesForRouter(uplink.Container, namespace, clientset, config)
+				if err == nil {
+					result = getConnectedSitesFromNodes(nodes, false, namespace, clientset, config)
+					return result, nil
+				} else {
+					fmt.Println("Failed to get nodes from uplink:", err)
+					return result, err
+				}
+			}
+		} else {
+			fmt.Println("Failed to get edge uplink:", err)
+			return result, err
+		}
+	} else {
+		nodes, err := GetNodes(namespace, clientset, config)
+		if err == nil {
+			result = getConnectedSitesFromNodes(nodes, true, namespace, clientset, config)
+			return result, nil
+		} else {
+			return result, err
+		}
+	}
+}
+
+func GetEdgeSitesForRouter(routerid string, namespace string, clientset *kubernetes.Clientset, config *restclient.Config) (int, error) {
+	connections, err := getConnectionsForRouter(routerid, namespace, clientset, config)
+	if err == nil {
+		count := 0
+		for _, c := range connections {
+			if c.Role == "edge" && c.Dir == "in" {
+				count++
+			}
+		}
+		return count, nil
+	} else {
+		return 0, err
+	}
 }
 
 func get_query(typename string) []string {
@@ -77,8 +133,20 @@ func get_query(typename string) []string {
 	}
 }
 
+func get_query_for_router(typename string, routerid string) []string {
+	results := get_query(typename)
+	if routerid != "" {
+		results = append(results, "--router", routerid)
+	}
+	return results
+}
+
 func GetNodes(namespace string, clientset *kubernetes.Clientset, config *restclient.Config) ([]RouterNode, error) {
-	command := get_query("node")
+	return getNodesForRouter("", namespace, clientset, config)
+}
+
+func getNodesForRouter(routerid, namespace string, clientset *kubernetes.Clientset, config *restclient.Config) ([]RouterNode, error) {
+	command := get_query_for_router("node", routerid)
 	buffer, err := router_exec(command, namespace, clientset, config)
 	if err != nil {
 		return nil, err
@@ -103,8 +171,26 @@ func GetInterRouterOrEdgeConnection(host string, connections []Connection) *Conn
 	return nil
 }
 
+func getEdgeUplink(namespace string, clientset *kubernetes.Clientset, config *restclient.Config) (*Connection, error) {
+	connections, err := GetConnections(namespace, clientset, config)
+	if err == nil {
+		for _, c := range connections {
+			if c.Role == "edge" && c.Dir == "out" {
+				return &c, nil
+			}
+		}
+		return nil, nil
+	} else {
+		return nil, err
+	}
+}
+
 func GetConnections(namespace string, clientset *kubernetes.Clientset, config *restclient.Config) ([]Connection, error) {
-	command := get_query("connection")
+	return getConnectionsForRouter("", namespace, clientset, config)
+}
+
+func getConnectionsForRouter(routerid string, namespace string, clientset *kubernetes.Clientset, config *restclient.Config) ([]Connection, error) {
+	command := get_query_for_router("connection", routerid)
 	buffer, err := router_exec(command, namespace, clientset, config)
 	if err != nil {
 		return nil, err

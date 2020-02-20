@@ -1316,10 +1316,10 @@ func status(kube *KubeDetails) {
 		if current.Status.ReadyReplicas == 0 {
 			fmt.Printf("Skupper is installed in namespace '%q%s'. Status pending...", kube.Namespace, modedesc)
 		} else {
-			connected, err := router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
+			connected, err := router.GetConnectedSites(mode == RouterModeEdge, kube.Namespace, kube.Standard, kube.RestConfig)
 			for i :=0; i < 5 && err != nil; i++ {
 				time.Sleep(500*time.Millisecond)
-				connected, err = router.GetConnectedSites(kube.Namespace, kube.Standard, kube.RestConfig)
+				connected, err = router.GetConnectedSites(mode == RouterModeEdge, kube.Namespace, kube.Standard, kube.RestConfig)
 			}
 			if err != nil {
 				log.Fatalf("Skupper is enabled for namespace '%s'. Unable to determine connectivity:%s\n", kube.Namespace, err)
