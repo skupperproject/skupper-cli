@@ -94,9 +94,9 @@ func GetNodes(namespace string, clientset *kubernetes.Clientset, config *restcli
 	}
 }
 
-func GetInterRouterConnection(host string, connections []Connection) *Connection {
+func GetInterRouterOrEdgeConnection(host string, connections []Connection) *Connection {
 	for _, c := range connections {
-		if c.Role == "inter-router" && c.Host == host {
+		if (c.Role == "inter-router" || c.Role == "edge") && c.Host == host {
 			return &c
 		}
 	}

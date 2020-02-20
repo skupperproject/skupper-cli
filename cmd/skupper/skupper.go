@@ -1179,7 +1179,7 @@ func check_connection(name string, kube *KubeDetails) bool {
 	if err == nil {
 		result := true
 		for _, connector := range connectors {
-			connection := router.GetInterRouterConnection(connector.Host + ":" + connector.Port, connections)
+			connection := router.GetInterRouterOrEdgeConnection(connector.Host + ":" + connector.Port, connections)
 			if connection == nil || !connection.Active {
 				fmt.Printf("Connection for %s not active", connector.Name)
 				fmt.Println()
