@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
 	jsonencoding "encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -619,11 +618,16 @@ func RouterDeployment(router *Router, namespace string) *appsv1.Deployment {
 	return dep
 }
 
+const alphanumerics = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
 func randomId(length int) string {
-    buffer := make([]byte, length)
-    rand.Read(buffer)
-    result := base64.StdEncoding.EncodeToString(buffer)
-    return result[:length]
+	buffer := make([]byte, length)
+	rand.Read(buffer)
+	max := len(alphanumerics)
+	for i := range buffer {
+		buffer[i] = alphanumerics[int(buffer[i]) % max]
+	}
+	return string(buffer)
 }
 
 func ensureProxyController(enableServiceSync bool, router *appsv1.Deployment, kube *KubeDetails) {
