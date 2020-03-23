@@ -61,6 +61,8 @@ workflows:
           <<: *release_filters
       - test:
           <<: *branch_filters
+      - smoke_test:
+          <<: *branch_filters
 
       - publish-github-release:
           <<: *release_filters
@@ -74,6 +76,7 @@ workflows:
             - build-linux-arm
             - build-linux-arm64
             - test
+            - smoke_test
 
 jobs:
   build-linux-amd64: &go_build
@@ -152,6 +155,47 @@ jobs:
       - run:
           name: Run Tests
           command: go test ./...
+
+  smoke_test:
+    machine: true
+    environment: &environment
+    steps:
+      - run:
+          name: export
+          command: |
+            echo 'export KUBECONFIG=/home/circleci/.kube/config' >> $BASH_ENV
+            echo 'export GOROOT=/usr/local/go' >> $BASH_ENV
+            echo 'export GOPATH=$HOME/Projects/Proj1' >> $BASH_ENV
+            echo 'export PATH=$GOPATH/bin:$GOROOT/bin:$PATH' >> $BASH_ENV
+            source $BASH_ENV
+      - checkout
+      - run:
+          name: install go 1.13
+          command: |
+            wget https://dl.google.com/go/go1.13.3.linux-amd64.tar.gz
+            sudo tar -xvf go1.13.3.linux-amd64.tar.gz
+            sudo rm -rf /usr/local/go && sudo mv go /usr/local
+      - run:
+          name: print go version
+          command: go version
+      - run:
+          name: get kind
+          command: env GO111MODULE=off go get sigs.k8s.io/kind
+      - run:
+          name: compile
+          command: make
+      - run:
+          name: Create kind cluster
+          command: kind create cluster --wait 30m #bla
+      - run:
+          name: Install kubectl
+          command: curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/v1.17.4/bin/linux/amd64/kubectl && mkdir -p ~/bin && mv kubectl ~/bin/ && chmod +x ~/bin/kubectl
+      - run:
+          name: print cluster info
+          command: kubectl cluster-info
+      - run:
+          name: Run Tests
+          command: ./skupper_smoke #set kubeconfig as parameter if needed
 
   publish-github-release:
     docker:

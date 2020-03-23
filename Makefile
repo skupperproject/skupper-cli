@@ -4,6 +4,7 @@ all: build
 
 build:
 	go build -ldflags="-X main.version=${VERSION}"  -o skupper cmd/skupper/skupper.go
+	go build -ldflags="-X main.version=${VERSION}"  -o skupper_smoke cmd/skupper_smoke/skupper_smoke.go
 
 clean:
 	rm -rf skupper release
