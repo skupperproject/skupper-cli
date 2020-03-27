@@ -87,7 +87,6 @@ type Router struct {
 	Console ConsoleAuthMode
 	ConsoleUser string
 	ConsolePassword string
-	ExposeUnsecured bool
 }
 
 func routerConfig(router *Router) string {
@@ -98,11 +97,7 @@ router {
 }
 
 listener {
-{{- if .ExposeUnsecured}}
-    host: 0.0.0.0
-{{- else}}
     host: localhost
-{{- end}}
     port: 5672
     role: normal
 }
@@ -393,7 +388,7 @@ func addConnector(connector *Connector, router *appsv1.Deployment) {
 	mountRouterTLSVolume(connector.Name, router)
 }
 
-func messagingServicePorts(expose5672 bool) []corev1.ServicePort {
+func messagingServicePorts() []corev1.ServicePort {
 	ports := []corev1.ServicePort{}
 	ports = append(ports, corev1.ServicePort{
 		Name:       "amqps",
@@ -401,15 +396,6 @@ func messagingServicePorts(expose5672 bool) []corev1.ServicePort {
 		Port:       5671,
 		TargetPort: intstr.FromInt(5671),
 	})
-	if expose5672 {
-		fmt.Println("Adding 5672 to exposed ports")
-		ports = append(ports, corev1.ServicePort{
-			Name:       "amqp",
-			Protocol:   "TCP",
-			Port:       5672,
-			TargetPort: intstr.FromInt(5672),
-		})
-	}
 	return ports
 }
 
@@ -1060,7 +1046,7 @@ func initCommon(router *Router, volumes []string, kube *KubeDetails) *appsv1.Dep
 	ensureRoleBinding("skupper", "skupper-view", dep, kube)
 
 
-	ensureService("skupper-messaging", messagingServicePorts(router.ExposeUnsecured), &owner, "", "", kube)
+	ensureService("skupper-messaging", messagingServicePorts(), &owner, "", "", kube)
 	if router.Console != "" {
 		servingCerts := ""
 		termination := routev1.TLSTerminationEdge
@@ -2243,7 +2229,6 @@ func main() {
 	var routerConsoleUser string
 	var routerConsolePassword string
 	var clusterLocal bool
-	var exposeUnsecured bool
 	var cmdInit = &cobra.Command{
 		Use:   "init",
 		Short: "Initialise a Skupper site",
@@ -2254,7 +2239,6 @@ func main() {
 				Name: skupperName,
 				Mode: RouterModeInterior,
 				Replicas: 1,
-				ExposeUnsecured: exposeUnsecured,
 			}
 			if enableRouterConsole {
 				if routerConsoleAuthMode == string(ConsoleAuthModeInternal) || routerConsoleAuthMode == "" {
@@ -2308,7 +2292,6 @@ func main() {
 	cmdInit.Flags().StringVarP(&routerConsoleUser, "router-console-user", "", "", "Router console user. Valid only when --router-console-auth=internal")
 	cmdInit.Flags().StringVarP(&routerConsolePassword, "router-console-password", "", "", "Router console user. Valid only when --router-console-auth=internal")
 	cmdInit.Flags().BoolVarP(&clusterLocal, "cluster-local", "", false, "Set up skupper to only accept connections from within the local cluster.")
-	cmdInit.Flags().BoolVarP(&exposeUnsecured, "expose-unsecured-router-port", "", false, "Use of this option is not advised. It is unsafe and may be removed at any time.")
 
 	var cmdDelete = &cobra.Command{
 		Use:   "delete",
