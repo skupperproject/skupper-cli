@@ -32,7 +32,7 @@ the same cluster.
 
 Note: if using minikube, you can get the LoadBalancer service to setup
 an external ip by running minikube tunnel. (Or else use
---cluster-local as desrcibed above).
+--cluster-local as described above).
 
 
 
