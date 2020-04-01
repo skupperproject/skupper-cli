@@ -75,7 +75,7 @@ workflows:
             - build-windows-amd64
             - build-linux-arm
             - build-linux-arm64
-#            - test
+            - test
             - smoke_test
 
 jobs:
