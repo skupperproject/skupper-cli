@@ -1,9 +1,11 @@
 package kube_test
 
 import (
+	"context"
 	"errors"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	"testing"
 
@@ -74,7 +76,7 @@ func TestGetReadyPod(t *testing.T) {
 		pod.Name = name
 		pod.Namespace = namespace
 		pod.Status.Conditions = conditions
-		kubeClient.CoreV1().Pods(namespace).Create(&pod)
+		kubeClient.CoreV1().Pods(namespace).Create(context.Background(), &pod, metav1.CreateOptions{})
 	}
 
 	kubeClient = fake.NewSimpleClientset() //clean namespace

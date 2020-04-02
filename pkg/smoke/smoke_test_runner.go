@@ -1,6 +1,7 @@
 package smoke
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os/exec"
@@ -94,14 +95,14 @@ func (cc *ClusterContext) KubectlExecAsync(command string) {
 
 func (cc *ClusterContext) CreateNamespace() {
 	NsSpec := &apiv1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cc.Namespace}}
-	_, err := cc.Clientset.CoreV1().Namespaces().Create(NsSpec)
+	_, err := cc.Clientset.CoreV1().Namespaces().Create(context.Background(), NsSpec, metav1.CreateOptions{})
 	if err != nil {
 		log.Panic(err.Error())
 	}
 }
 
 func (cc *ClusterContext) DeleteNamespace() {
-	err := cc.Clientset.CoreV1().Namespaces().Delete(cc.Namespace, &metav1.DeleteOptions{})
+	err := cc.Clientset.CoreV1().Namespaces().Delete(context.Background(), cc.Namespace, metav1.DeleteOptions{})
 	if err != nil {
 		log.Panic(err.Error())
 	}
@@ -115,7 +116,7 @@ func (cc *ClusterContext) GetService(name string, timeout_S time.Duration) *apiv
 		case <-timeout:
 			log.Panicln("Timed Out Waiting for service.")
 		case <-tick:
-			service, err := cc.Clientset.CoreV1().Services(cc.Namespace).Get(name, metav1.GetOptions{})
+			service, err := cc.Clientset.CoreV1().Services(cc.Namespace).Get(context.Background(), name, metav1.GetOptions{})
 			if err == nil {
 				return service
 			} else {

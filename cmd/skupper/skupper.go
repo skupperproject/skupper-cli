@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	jsonencoding "encoding/json"
 	"fmt"
@@ -23,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-        "k8s.io/apimachinery/pkg/runtime/serializer"
         "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/discovery"
@@ -314,7 +314,7 @@ func unmountRouterTLSVolume(name string, router *appsv1.Deployment) {
 
 func ensureSaslUsers(user string, password string, owner *metav1.OwnerReference, kube *KubeDetails) {
 	name := "skupper-console-users"
-	_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get(name, metav1.GetOptions{})
+	_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("console users secret already exists")
 	} else if errors.IsNotFound(err) {
@@ -336,7 +336,7 @@ func ensureSaslUsers(user string, password string, owner *metav1.OwnerReference,
 			}
 		}
 
-		_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&secret)
+		_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(context.Background(), &secret, metav1.CreateOptions{})
 		if err != nil {
 			log.Fatal("Failed to create console users secret: ", err.Error())
 		}
@@ -347,7 +347,7 @@ func ensureSaslUsers(user string, password string, owner *metav1.OwnerReference,
 
 func ensureSaslConfig(owner *metav1.OwnerReference, kube *KubeDetails) {
 	name := "skupper-sasl-config"
-	_, err :=kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(name, metav1.GetOptions{})
+	_, err :=kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("sasl config already exists")
 	} else if errors.IsNotFound(err) {
@@ -373,7 +373,7 @@ sasldb_path: /tmp/qdrouterd.sasldb
 				*owner,
 			}
 		}
-		_, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(configMap)
+		_, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(context.Background(), configMap, metav1.CreateOptions{})
 		if err != nil {
 			log.Fatal("Failed to create sasl config: ", err.Error())
 		}
@@ -681,7 +681,7 @@ func randomId(length int) string {
 
 func ensureProxyController(enableServiceSync bool, router *appsv1.Deployment, authConfig *Router, kube *KubeDetails) {
 	deployments:= kube.Standard.AppsV1().Deployments(kube.Namespace)
-	_, err :=  deployments.Get("skupper-proxy-controller", metav1.GetOptions{})
+	_, err :=  deployments.Get(context.Background(), "skupper-proxy-controller", metav1.GetOptions{})
 	if err == nil  {
 		// Deployment exists, do we need to update it?
 		fmt.Println("Proxy controller deployment already exists")
@@ -789,7 +789,7 @@ func ensureProxyController(enableServiceSync bool, router *appsv1.Deployment, au
 			mountSecretVolume("skupper", "/etc/messaging/", 0, dep)
 		}
 
-		_, err := deployments.Create(dep)
+		_, err := deployments.Create(context.Background(), dep, metav1.CreateOptions{})
 		if err != nil {
 			log.Fatal("Failed to create proxy-controller deployment: " + err.Error())
 		}
@@ -800,7 +800,7 @@ func ensureProxyController(enableServiceSync bool, router *appsv1.Deployment, au
 
 func ensureRouterDeployment(router *Router, volumes []string, owner *metav1.OwnerReference, kube *KubeDetails) *appsv1.Deployment {
 	deployments:= kube.Standard.AppsV1().Deployments(kube.Namespace)
-	existing, err :=  deployments.Get("skupper-router", metav1.GetOptions{})
+	existing, err :=  deployments.Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err == nil  {
 		// Deployment exists, do we need to update it?
 		fmt.Println("Router deployment already exists")
@@ -810,7 +810,7 @@ func ensureRouterDeployment(router *Router, volumes []string, owner *metav1.Owne
 		for _, v := range volumes {
 			mountRouterTLSVolume(v, routerDeployment)
 		}
-		created, err := deployments.Create(routerDeployment)
+		created, err := deployments.Create(context.Background(), routerDeployment, metav1.CreateOptions{})
 		if err != nil {
 			log.Fatal("Failed to create router deployment: " + err.Error())
 		} else {
@@ -823,7 +823,7 @@ func ensureRouterDeployment(router *Router, volumes []string, owner *metav1.Owne
 }
 
 func ensureCA(name string, owner *metav1.OwnerReference, kube *KubeDetails) *corev1.Secret {
-	existing, err :=kube.Standard.CoreV1().Secrets(kube.Namespace).Get(name, metav1.GetOptions{})
+	existing, err :=kube.Standard.CoreV1().Secrets(kube.Namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("CA", name, "already exists")
 		return existing
@@ -835,7 +835,7 @@ func ensureCA(name string, owner *metav1.OwnerReference, kube *KubeDetails) *cor
 			}
 
 		}
-		_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&ca)
+		_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(context.Background(), &ca, metav1.CreateOptions{})
 		if err == nil {
 			return &ca
 		} else {
@@ -856,7 +856,7 @@ func ensureServiceForController(name string, ports []corev1.ServicePort, owner *
 }
 
 func ensureServiceForComponent(name string, component string, ports []corev1.ServicePort, owner *metav1.OwnerReference, servingCert string, serviceType string, kube *KubeDetails) (*corev1.Service, error) {
-	current, err :=kube.Standard.CoreV1().Services(kube.Namespace).Get(name, metav1.GetOptions{})
+	current, err :=kube.Standard.CoreV1().Services(kube.Namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("Service", name, "already exists")
 		return current, nil
@@ -889,7 +889,7 @@ func ensureServiceForComponent(name string, component string, ports []corev1.Ser
 			}
 
 		}
-		created, err := kube.Standard.CoreV1().Services(kube.Namespace).Create(service)
+		created, err := kube.Standard.CoreV1().Services(kube.Namespace).Create(context.Background(), service, metav1.CreateOptions{})
 		if err != nil {
 			fmt.Println("Failed to create service", name, ": ", err.Error())
 			return nil, err
@@ -907,7 +907,7 @@ func ensureRoute(name string, targetService string, targetPort string, terminati
 	if termination != routev1.TLSTerminationPassthrough {
 		insecurePolicy = routev1.InsecureEdgeTerminationPolicyRedirect
 	}
-	_, err := kube.Routes.Routes(kube.Namespace).Get(name, metav1.GetOptions{})
+	_, err := kube.Routes.Routes(kube.Namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("Route", name, "already exists")
 	} else if errors.IsNotFound(err) {
@@ -941,7 +941,7 @@ func ensureRoute(name string, targetService string, targetPort string, terminati
 
 		}
 
-		created, err := kube.Routes.Routes(kube.Namespace).Create(route)
+		created, err := kube.Routes.Routes(kube.Namespace).Create(context.Background(), route, metav1.CreateOptions{})
 		if err != nil {
 			fmt.Println("Failed to create route", name, ": ", err.Error())
 		} else {
@@ -963,7 +963,7 @@ func generateSecret(caSecret *corev1.Secret, name string, subject string, hosts 
 			*owner,
 		}
 	}
-	_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&secret)
+	_, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Create(context.Background(), &secret, metav1.CreateOptions{})
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			//TODO: recreate or just use whats there?
@@ -992,7 +992,7 @@ func ensureServiceAccount(name string, router *appsv1.Deployment, oauth string, 
 			"serviceaccounts.openshift.io/oauth-redirectreference.primary": "{\"kind\":\"OAuthRedirectReference\",\"apiVersion\":\"v1\",\"reference\":{\"kind\":\"Route\",\"name\":\"" + oauth + "\"}}",
 		}
 	}
-	actual, err := kube.Standard.CoreV1().ServiceAccounts(kube.Namespace).Create(serviceaccount)
+	actual, err := kube.Standard.CoreV1().ServiceAccounts(kube.Namespace).Create(context.Background(), serviceaccount, metav1.CreateOptions{})
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			log.Println("Service account", name, "already exists");
@@ -1023,7 +1023,7 @@ func ensureViewRole(router *appsv1.Deployment, kube *KubeDetails) *rbacv1.Role {
 			Resources: []string{"pods"},
 		}},
 	}
-	actual, err := kube.Standard.RbacV1().Roles(kube.Namespace).Create(role)
+	actual, err := kube.Standard.RbacV1().Roles(kube.Namespace).Create(context.Background(), role, metav1.CreateOptions{})
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			log.Println("Role", name, "already exists");
@@ -1070,7 +1070,7 @@ func ensureEditRole(router *appsv1.Deployment, kube *KubeDetails) *rbacv1.Role {
 			},
 		)
 	}
-	actual, err := kube.Standard.RbacV1().Roles(kube.Namespace).Create(role)
+	actual, err := kube.Standard.RbacV1().Roles(kube.Namespace).Create(context.Background(), role, metav1.CreateOptions{})
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			log.Println("Role", name, "already exists");
@@ -1104,7 +1104,7 @@ func ensureRoleBinding(serviceaccount string, role string, router *appsv1.Deploy
 			Name: role,
 		},
 	}
-	_, err := kube.Standard.RbacV1().RoleBindings(kube.Namespace).Create(rolebinding)
+	_, err := kube.Standard.RbacV1().RoleBindings(kube.Namespace).Create(context.Background(), rolebinding, metav1.CreateOptions{})
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			log.Println("Role binding", name, "already exists");
@@ -1270,7 +1270,7 @@ func initInterior(router *Router, kube *KubeDetails, clusterLocal bool) *appsv1.
 					fmt.Println("Waiting for LoadBalancer IP or hostname...")
 				}
 				time.Sleep(time.Second)
-				service, err = kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
+				service, err = kube.Standard.CoreV1().Services(kube.Namespace).Get(context.Background(), "skupper-internal", metav1.GetOptions{})
 				host = getLoadBalancerHostOrIp(service)
 			}
 			if host == "" {
@@ -1290,7 +1290,7 @@ func initInterior(router *Router, kube *KubeDetails, clusterLocal bool) *appsv1.
 
 func deleteSecret(name string, kube *KubeDetails) {
 	secrets:= kube.Standard.CoreV1().Secrets(kube.Namespace)
-	err :=  secrets.Delete(name, &metav1.DeleteOptions{})
+	err :=  secrets.Delete(context.Background(), name, metav1.DeleteOptions{})
 	if err == nil  {
 		fmt.Println("Secret", name, "deleted")
 	} else if errors.IsNotFound(err) {
@@ -1301,7 +1301,7 @@ func deleteSecret(name string, kube *KubeDetails) {
 }
 
 func check_connection(name string, kube *KubeDetails) bool {
-	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			fmt.Println("Skupper is not installed in '" + kube.Namespace + "'.  Use 'skupper init' to install.")
@@ -1348,7 +1348,7 @@ func check_connection(name string, kube *KubeDetails) bool {
 
 func retrieveConnectors(mode RouterMode, kube *KubeDetails) []Connector {
 	var connectors []Connector
-	secrets, err := kube.Standard.CoreV1().Secrets(kube.Namespace).List(metav1.ListOptions{LabelSelector:"skupper.io/type=connection-token",})
+	secrets, err := kube.Standard.CoreV1().Secrets(kube.Namespace).List(context.Background(), metav1.ListOptions{LabelSelector:"skupper.io/type=connection-token",})
 	if err == nil {
 		var role ConnectorRole
 		var hostKey string
@@ -1377,7 +1377,7 @@ func retrieveConnectors(mode RouterMode, kube *KubeDetails) []Connector {
 }
 
 func listConnectors(kube *KubeDetails) {
-	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err == nil {
 		mode := get_router_mode(current)
 		connectors := retrieveConnectors(mode, kube)
@@ -1398,7 +1398,7 @@ func listConnectors(kube *KubeDetails) {
 }
 
 func get_connector(name string, mode RouterMode, kube *KubeDetails) (Connector, error) {
-	s, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get(name, metav1.GetOptions{})
+	s, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err == nil {
 		var role ConnectorRole
 		var hostKey string
@@ -1426,7 +1426,7 @@ func get_connector(name string, mode RouterMode, kube *KubeDetails) (Connector, 
 }
 
 func generate_connector_name(kube *KubeDetails) string {
-	secrets, err := kube.Standard.CoreV1().Secrets(kube.Namespace).List(metav1.ListOptions{LabelSelector:"skupper.io/type=connection-token",})
+	secrets, err := kube.Standard.CoreV1().Secrets(kube.Namespace).List(context.Background(), metav1.ListOptions{LabelSelector:"skupper.io/type=connection-token",})
 	max := 1
 	if err == nil {
 		connector_name_pattern := regexp.MustCompile("conn([0-9])+")
@@ -1455,7 +1455,7 @@ func get_router_mode(router *appsv1.Deployment) RouterMode {
 }
 
 func status(kube *KubeDetails) {
-	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err == nil {
 		mode := get_router_mode(current)
 		var modedesc string
@@ -1514,7 +1514,7 @@ func remove_connector(name string, list []Connector) (bool, []Connector) {
 }
 
 func disconnect(name string, kube *KubeDetails) {
-	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err == nil {
 		mode := get_router_mode(router)
 		found, connectors := remove_connector(name, retrieveConnectors(mode, kube))
@@ -1531,7 +1531,7 @@ func disconnect(name string, kube *KubeDetails) {
 				setEnvVar(router, "QDROUTERD_CONF", updated)
 				unmountRouterTLSVolume(name, router)
 				deleteSecret(name, kube)
-				_, err = kube.Standard.AppsV1().Deployments(kube.Namespace).Update(router)
+				_, err = kube.Standard.AppsV1().Deployments(kube.Namespace).Update(context.Background(), router, metav1.UpdateOptions{})
 				if err != nil {
 					fmt.Println("Failed to remove connection:", err.Error())
 				}
@@ -1563,7 +1563,7 @@ func connect(secretFile string, connectorName string, cost int, kube *KubeDetail
 		return
         }
 	//determine if local deployment is edge or interior
-	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err == nil {
 		mode := get_router_mode(current)
 		if connectorName == "" {
@@ -1576,7 +1576,7 @@ func connect(secretFile string, connectorName string, cost int, kube *KubeDetail
 		secret.ObjectMeta.SetOwnerReferences([]metav1.OwnerReference{
 			get_owner_reference(current),
 		});
-		_, err = kube.Standard.CoreV1().Secrets(kube.Namespace).Create(&secret)
+		_, err = kube.Standard.CoreV1().Secrets(kube.Namespace).Create(context.Background(), &secret, metav1.CreateOptions{})
 		if err == nil {
 			//read annotations to get the host and port to connect to
 			connector := Connector{
@@ -1593,7 +1593,7 @@ func connect(secretFile string, connectorName string, cost int, kube *KubeDetail
 				connector.Role = ConnectorRoleEdge
 			}
 			addConnector(&connector, current)
-			_, err = kube.Standard.AppsV1().Deployments(kube.Namespace).Update(current)
+			_, err = kube.Standard.AppsV1().Deployments(kube.Namespace).Update(context.Background(), current, metav1.UpdateOptions{})
 			if err != nil {
 				fmt.Println("Failed to update router deployment: ", err.Error())
 			} else {
@@ -1658,8 +1658,8 @@ func configureHostPortsFromRoutes(result *RouterHostPorts, kube *KubeDetails) (b
 	if kube.Routes == nil {
 		return false, nil
 	} else {
-		interRouterRoute, err1 := kube.Routes.Routes(kube.Namespace).Get("skupper-inter-router", metav1.GetOptions{})
-		edgeRoute, err2 := kube.Routes.Routes(kube.Namespace).Get("skupper-edge", metav1.GetOptions{})
+		interRouterRoute, err1 := kube.Routes.Routes(kube.Namespace).Get(context.Background(), "skupper-inter-router", metav1.GetOptions{})
+		edgeRoute, err2 := kube.Routes.Routes(kube.Namespace).Get(context.Background(), "skupper-edge", metav1.GetOptions{})
 		if err1 != nil && err2 != nil && errors.IsNotFound(err1) && errors.IsNotFound(err2) {
 			return false, nil
 		} else if err1 != nil {
@@ -1685,7 +1685,7 @@ func configureHostPorts(result *RouterHostPorts, kube *KubeDetails) bool {
 	} else if ok {
 		return ok
 	} else {
-		service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get("skupper-internal", metav1.GetOptions{})
+		service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get(context.Background(), "skupper-internal", metav1.GetOptions{})
 		if err != nil {
 			log.Fatal("Could not get service", err.Error())
 			return false
@@ -1717,10 +1717,10 @@ func configureHostPorts(result *RouterHostPorts, kube *KubeDetails) bool {
 
 func generateConnectSecret(subject string, secretFile string, kube *KubeDetails) {
 	//verify that local deployment is interior
-	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	current, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err == nil  {
 		if isInterior(current) {
-			caSecret, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get("skupper-internal-ca", metav1.GetOptions{})
+			caSecret, err := kube.Standard.CoreV1().Secrets(kube.Namespace).Get(context.Background(), "skupper-internal-ca", metav1.GetOptions{})
 			if err == nil {
 				//get the host and port for inter-router and edge
 				var hostPorts RouterHostPorts
@@ -1764,11 +1764,11 @@ func generateConnectSecret(subject string, secretFile string, kube *KubeDetails)
 }
 
 func deleteSkupper(kube *KubeDetails) {
-	err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Delete("skupper-site", &metav1.DeleteOptions{})
+	err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Delete(context.Background(), "skupper-site", metav1.DeleteOptions{})
 	if err == nil  {
 		fmt.Println("Skupper is now removed from '" + kube.Namespace + "'.")
 	} else if errors.IsNotFound(err) {
-		err := kube.Standard.AppsV1().Deployments(kube.Namespace).Delete("skupper-router", &metav1.DeleteOptions{})
+		err := kube.Standard.AppsV1().Deployments(kube.Namespace).Delete(context.Background(), "skupper-router", metav1.DeleteOptions{})
 		if err == nil  {
 			fmt.Println("Skupper is now removed from '" + kube.Namespace + "'.")
 		} else if errors.IsNotFound(err) {
@@ -1782,7 +1782,7 @@ func deleteSkupper(kube *KubeDetails) {
 }
 
 func ensureSkupperConfig(router *Router, kube *KubeDetails) (*corev1.ConfigMap, error) {
-	config, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-site", metav1.GetOptions{})
+	config, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-site", metav1.GetOptions{})
 	if err != nil  {
 		if errors.IsNotFound(err) {
 			siteid := randomId(10)
@@ -1799,7 +1799,7 @@ func ensureSkupperConfig(router *Router, kube *KubeDetails) (*corev1.ConfigMap, 
 					"name": router.Name,
 				},
 			}
-			created, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(&configMap)
+			created, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(context.Background(), &configMap, metav1.CreateOptions{})
 			if err != nil {
 				log.Fatal("Failed to create skupper-site config map: ", err.Error())
 				return nil, err
@@ -1923,7 +1923,7 @@ type Headless struct {
 }
 
 func updateServiceDefinition(serviceName string, targetName string, selector string, port int, options ExposeOptions, owner *metav1.OwnerReference, kube *KubeDetails) {
-	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 	if err == nil  {
 		//is the service already defined?
 		serviceTarget := ServiceTarget {
@@ -2011,7 +2011,7 @@ func updateServiceDefinition(serviceName string, targetName string, selector str
 				}
 			}
 		}
-		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(context.Background(), current, metav1.UpdateOptions{})
 		if err != nil {
 			log.Fatal("Failed to update skupper-services config map: ", err.Error())
 		}
@@ -2054,7 +2054,7 @@ func updateServiceDefinition(serviceName string, targetName string, selector str
 			}
 		}
 
-		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(&configMap)
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(context.Background(), &configMap, metav1.CreateOptions{})
 		if err != nil {
 			log.Fatal("Failed to create skupper-services config map: ", err.Error())
 		}
@@ -2065,7 +2065,7 @@ func updateServiceDefinition(serviceName string, targetName string, selector str
 }
 
 func updateHeadlessServiceDefinition(serviceName string, headless Headless, port int, options ExposeOptions, owner *metav1.OwnerReference, kube *KubeDetails) {
-	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 	if err == nil  {
 		//is the service already defined?
 		jsonDef := current.Data[serviceName]
@@ -2114,7 +2114,7 @@ func updateHeadlessServiceDefinition(serviceName string, headless Headless, port
 				}
 			}
 		}
-		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(context.Background(), current, metav1.UpdateOptions{})
 		if err != nil {
 			log.Fatal("Failed to update skupper-services config map: ", err.Error())
 		}
@@ -2146,7 +2146,7 @@ func updateHeadlessServiceDefinition(serviceName string, headless Headless, port
 			}
 		}
 
-		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(&configMap)
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(context.Background(), &configMap, metav1.CreateOptions{})
 		if err != nil {
 			log.Fatal("Failed to create skupper-services config map: ", err.Error())
 		}
@@ -2171,7 +2171,7 @@ func stringifySelector(labels map[string]string) string {
 }
 
 func expose(targetType string, targetName string, options ExposeOptions, kube *KubeDetails) {
-	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			fmt.Println("Skupper is not enabled for '" + kube.Namespace + "'")
@@ -2185,7 +2185,7 @@ func expose(targetType string, targetName string, options ExposeOptions, kube *K
 	} else {
 		owner := get_owner_reference(router)
 		if targetType == "deployment" {
-			target, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(targetName, metav1.GetOptions{})
+			target, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), targetName, metav1.GetOptions{})
 			if err == nil  {
 				//TODO: handle case where there is more than one container (need --container option?)
 				port := options.Port
@@ -2214,13 +2214,13 @@ func expose(targetType string, targetName string, options ExposeOptions, kube *K
 			}
 		} else if targetType == "statefulset" {
 			if options.Headless {
-				statefulset, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(targetName, metav1.GetOptions{})
+				statefulset, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(context.Background(), targetName, metav1.GetOptions{})
 				if err == nil  {
 					if options.Address != "" && options.Address != statefulset.Spec.ServiceName {
 						fmt.Printf("Cannot specify different address from service name for headless service.")
 						fmt.Println()
 					}
-					service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get(statefulset.Spec.ServiceName, metav1.GetOptions{})
+					service, err := kube.Standard.CoreV1().Services(kube.Namespace).Get(context.Background(), statefulset.Spec.ServiceName, metav1.GetOptions{})
 					if err == nil  {
 						var port int
 						var headless Headless
@@ -2256,7 +2256,7 @@ func expose(targetType string, targetName string, options ExposeOptions, kube *K
 					fmt.Println()
 				}
 			} else {
-				target, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(targetName, metav1.GetOptions{})
+				target, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(context.Background(), targetName, metav1.GetOptions{})
 				if err == nil  {
 					//TODO: handle case where there is more than one container (need --container option?)
 					port := options.Port
@@ -2293,7 +2293,7 @@ func expose(targetType string, targetName string, options ExposeOptions, kube *K
 }
 
 func removeServiceTarget(serviceName string, targetName string, deleteServiceIfNoTargets bool, kube *KubeDetails) {
-	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 	if err == nil  {
 		jsonDef := current.Data[serviceName]
 		if jsonDef == "" {
@@ -2340,7 +2340,7 @@ func removeServiceTarget(serviceName string, targetName string, deleteServiceIfN
 				}
 			}
 		}
-		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+		_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(context.Background(), current, metav1.UpdateOptions{})
 		if err != nil {
 			log.Fatal("Failed to update skupper-services config map: ", err.Error())
 		}
@@ -2367,7 +2367,7 @@ func unexpose(targetType string, targetName string, address string, kube *KubeDe
 }
 
 func listServiceDefinitions(kube *KubeDetails) {
-	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 	if err == nil  {
 		fmt.Println("Services exposed through Skupper:")
 		for k, v := range current.Data {
@@ -2416,12 +2416,12 @@ func saveServiceDefinition(service *Service, kube *KubeDetails) {
 		fmt.Printf("Failed to encode service definition as json: %s", err)
 		fmt.Println()
 	} else {
-		current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+		current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 		if err != nil {
 			log.Fatal("Failed to get skupper-services config map: ", err.Error())
 		} else {
 			current.Data[service.Address] = string(encoded)
-			_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+			_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(context.Background(), current, metav1.UpdateOptions{})
 			if err != nil {
 				log.Fatal("Failed to update skupper-services config map: ", err.Error())
 			}
@@ -2430,7 +2430,7 @@ func saveServiceDefinition(service *Service, kube *KubeDetails) {
 }
 
 func getServiceDefinition(serviceName string, kube *KubeDetails) (*Service, error) {
-	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 	if err == nil  {
 		jsonDef := current.Data[serviceName]
 		if jsonDef == "" {
@@ -2485,7 +2485,7 @@ func bindServiceTarget(serviceName string, targetType string, targetName string,
 		}
 	} else {
 		if targetType == "deployment" {
-			target, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(targetName, metav1.GetOptions{})
+			target, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), targetName, metav1.GetOptions{})
 			if err == nil  {
 				serviceTarget := ServiceTarget {
 					Selector: stringifySelector(target.Spec.Selector.MatchLabels),
@@ -2505,7 +2505,7 @@ func bindServiceTarget(serviceName string, targetType string, targetName string,
 				fmt.Printf("Cannot bind additional targets to a headless.")
 				fmt.Println()
 			} else {
-				target, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(targetName, metav1.GetOptions{})
+				target, err := kube.Standard.AppsV1().StatefulSets(kube.Namespace).Get(context.Background(), targetName, metav1.GetOptions{})
 				if err == nil  {
 					serviceTarget := ServiceTarget {
 						Selector: stringifySelector(target.Spec.Selector.MatchLabels),
@@ -2540,7 +2540,7 @@ func unbindServiceTarget(serviceName string, targetType string, targetName strin
 }
 
 func createServiceDefinition(serviceName string, port int, mapping string, aggregate string, eventChannel bool, kube *KubeDetails) {
-	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get("skupper-router", metav1.GetOptions{})
+	router, err := kube.Standard.AppsV1().Deployments(kube.Namespace).Get(context.Background(), "skupper-router", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			fmt.Println("Skupper is not enabled for '" + kube.Namespace + "'")
@@ -2560,7 +2560,7 @@ func createServiceDefinition(serviceName string, port int, mapping string, aggre
 		if aggregate != "" {
 			serviceDef.Aggregate = aggregate
 		}
-		current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+		current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 		if err == nil  {
 			if current.Data == nil {
 				current.Data = make(map[string]string)
@@ -2578,7 +2578,7 @@ func createServiceDefinition(serviceName string, port int, mapping string, aggre
 				} else {
 					current.Data[serviceName] = string(encoded)
 				}
-				_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+				_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(context.Background(), current, metav1.UpdateOptions{})
 				if err != nil {
 					log.Fatal("Failed to update skupper-services config map: ", err.Error())
 				}
@@ -2606,7 +2606,7 @@ func createServiceDefinition(serviceName string, port int, mapping string, aggre
 				get_owner_reference(router),
 			}
 
-			_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(&configMap)
+			_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Create(context.Background(), &configMap, metav1.CreateOptions{})
 			if err != nil {
 				log.Fatal("Failed to create skupper-services config map: ", err.Error())
 			}
@@ -2617,7 +2617,7 @@ func createServiceDefinition(serviceName string, port int, mapping string, aggre
 }
 
 func deleteServiceDefinition(serviceName string, kube *KubeDetails) {
-	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 	if err == nil  {
 		jsonDef := current.Data[serviceName]
 		if jsonDef == "" {
@@ -2627,7 +2627,7 @@ func deleteServiceDefinition(serviceName string, kube *KubeDetails) {
 			fmt.Printf("Removing service definition for %s", serviceName)
 			fmt.Println()
 			delete(current.Data, serviceName)
-			_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(current)
+			_, err = kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Update(context.Background(), current, metav1.UpdateOptions{})
 			if err != nil {
 				log.Fatal("Failed to update skupper-services config map: ", err.Error())
 			}
@@ -2640,7 +2640,7 @@ func deleteServiceDefinition(serviceName string, kube *KubeDetails) {
 }
 
 func countServiceDefinitions(kube *KubeDetails) int {
-	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get("skupper-services", metav1.GetOptions{})
+	current, err := kube.Standard.CoreV1().ConfigMaps(kube.Namespace).Get(context.Background(), "skupper-services", metav1.GetOptions{})
 	if err == nil  {
 		count := 0
 		for k, v := range current.Data {
@@ -2695,7 +2695,6 @@ func initKubeConfig(options *KubeOptions) *KubeDetails {
 
 	restconfig.ContentConfig.GroupVersion = &schema.GroupVersion{Version:"v1"}
 	restconfig.APIPath = "/api"
-	restconfig.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: scheme.Codecs}
 	details.RestConfig = restconfig
         details.Standard, err = kubernetes.NewForConfig(restconfig)
         if err != nil {
@@ -2724,7 +2723,7 @@ func initKubeConfig(options *KubeOptions) *KubeDetails {
 
 func main() {
 	routev1.AddToScheme(scheme.Scheme)
-	routev1.AddToSchemeInCoreGroup(scheme.Scheme)
+	//routev1.AddToSchemeInCoreGroup(scheme.Scheme)
 
 	kubeoptions := KubeOptions{}
 

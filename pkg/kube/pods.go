@@ -15,6 +15,7 @@ limitations under the License.
 package kube
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -48,7 +49,7 @@ func FirstReadyPod(list []corev1.Pod) *corev1.Pod {
 
 func GetReadyPod(namespace string, clientset kubernetes.Interface, component string) (*corev1.Pod, error) {
 	selector := "skupper.io/component=" + component
-	pods, err := clientset.CoreV1().Pods(namespace).List(metav1.ListOptions{LabelSelector:selector,})
+	pods, err := clientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{LabelSelector:selector,})
 	if err != nil {
 		return nil, err
 	} else if len(pods.Items) == 0 {

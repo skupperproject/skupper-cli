@@ -1,6 +1,7 @@
 package tcp_echo
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -125,7 +126,7 @@ func (r *SmokeTestRunner) Setup() {
 	publicDeploymentsClient := r.Pub1Cluster.Clientset.AppsV1().Deployments(r.Pub1Cluster.Namespace)
 
 	fmt.Println("Creating deployment...")
-	result, err := publicDeploymentsClient.Create(deployment)
+	result, err := publicDeploymentsClient.Create(context.Background(), deployment, metav1.CreateOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -135,7 +136,7 @@ func (r *SmokeTestRunner) Setup() {
 	fmt.Printf("Created deployment %q.\n", result.GetObjectMeta().GetName())
 
 	fmt.Printf("Listing deployments in namespace %q:\n", "public")
-	list, err := publicDeploymentsClient.List(metav1.ListOptions{})
+	list, err := publicDeploymentsClient.List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		log.Panic(err.Error())
 	}
@@ -160,7 +161,7 @@ func (r *SmokeTestRunner) TearDown() {
 	publicDeploymentsClient := r.Pub1Cluster.Clientset.AppsV1().Deployments(r.Pub1Cluster.Namespace)
 	fmt.Println("Deleting deployment...")
 	deletePolicy := metav1.DeletePropagationForeground
-	if err := publicDeploymentsClient.Delete("tcp-go-echo", &metav1.DeleteOptions{
+	if err := publicDeploymentsClient.Delete(context.Background(), "tcp-go-echo", metav1.DeleteOptions{
 		PropagationPolicy: &deletePolicy,
 	}); err != nil {
 		log.Panic(err.Error())
