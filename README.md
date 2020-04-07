@@ -31,8 +31,8 @@ accept connections from skupper instances in different namespaces on
 the same cluster.
 
 Note: if using minikube, you can get the LoadBalancer service to setup
-an external ip by running minikube tunnel. (Or else use
---cluster-local as described above).
+an external ip by running minikube tunnel. (Or else use --cluster-local
+as described above).
 
 
 
