@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
         "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/discovery"
@@ -2695,6 +2696,7 @@ func initKubeConfig(options *KubeOptions) *KubeDetails {
 
 	restconfig.ContentConfig.GroupVersion = &schema.GroupVersion{Version:"v1"}
 	restconfig.APIPath = "/api"
+	restconfig.NegotiatedSerializer = serializer.WithoutConversionCodecFactory{CodecFactory: scheme.Codecs}
 	details.RestConfig = restconfig
         details.Standard, err = kubernetes.NewForConfig(restconfig)
         if err != nil {
