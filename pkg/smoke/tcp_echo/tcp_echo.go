@@ -108,13 +108,13 @@ func (r *SmokeTestRunner) RunTests() {
 	fmt.Printf("Public service ClusterIp = %q\n", publicService.Spec.ClusterIP)
 	fmt.Printf("Private service ClusterIp = %q\n", privateService.Spec.ClusterIP)
 
+	time.Sleep(20 * time.Second)
+
 	r.Pub1Cluster.KubectlExecAsync("port-forward service/tcp-go-echo 9090:9090")
 	r.Priv1Cluster.KubectlExecAsync("port-forward service/tcp-go-echo 9091:9090")
 
-	time.Sleep(2 * time.Second) //give time to port forwarding to start
+	time.Sleep(20 * time.Second) //give time to port forwarding to start
 
-	//sendReceive(publicService.Spec.ClusterIP + ":9090")
-	//sendReceive(privateService.Spec.ClusterIP + ":9090")
 	sendReceive("127.0.0.1:9090")
 	sendReceive("127.0.0.1:9091")
 }
