@@ -1,4 +1,19 @@
-version: 2
+version: 2.1
+orbs:
+    kube-orb: circleci/kubernetes@0.11.0
+    go: circleci/go@1.1.1
+
+commands:
+  kind-start:
+    description: install kind cluster
+    steps:
+      - run:
+          name: get kind
+          command: env GO111MODULE=off go get sigs.k8s.io/kind
+      - run:
+          name: Create kind cluster
+          command: kind create cluster --wait 30m #bla
+
 yaml-templates:
   branch_filters: &branch_filters
     filters:
@@ -40,7 +55,7 @@ yaml-templates:
       paths:
         - dist
 workflows:
-  version: 2
+  version: 2.1
   build-workflow:
     jobs:
       - build-linux-386:
@@ -170,26 +185,17 @@ jobs:
             source $BASH_ENV
       - checkout
       - run:
-          name: install go 1.13
-          command: |
-            wget https://dl.google.com/go/go1.13.3.linux-amd64.tar.gz
-            sudo tar -xvf go1.13.3.linux-amd64.tar.gz
-            sudo rm -rf /usr/local/go && sudo mv go /usr/local
+          name: cleanup previous go installation
+          command: sudo rm -rf /usr/local/go
+      - go/install
+      - kind-start
+      - kube-orb/install-kubectl
       - run:
           name: print go version
           command: go version
       - run:
-          name: get kind
-          command: env GO111MODULE=off go get sigs.k8s.io/kind
-      - run:
           name: compile
           command: make
-      - run:
-          name: Create kind cluster
-          command: kind create cluster --wait 30m #bla
-      - run:
-          name: Install kubectl
-          command: curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/v1.17.4/bin/linux/amd64/kubectl && mkdir -p ~/bin && mv kubectl ~/bin/ && chmod +x ~/bin/kubectl
       - run:
           name: print cluster info
           command: kubectl cluster-info
